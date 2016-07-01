@@ -155,5 +155,6 @@ func executorConfig() executorinit.Configuration {
 		MemoryMB:                    *memoryMBFlag,
 		DiskMB:                      *diskMBFlag,
 		MaxConcurrentDownloads:      *maxConcurrentDownloads,
+		Zone:			     *zone,
 	}
 }
