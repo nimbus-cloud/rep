@@ -132,6 +132,12 @@ var maxConcurrentDownloads = flag.Int(
 	"Number of concurrent download steps",
 )
 
+var firewallEnv = flag.String(
+	"firewallEnv",
+	"",
+	"nimbus2 firewall env, one of: test|dev|stage|prod",
+)
+
 func executorConfig() executorinit.Configuration {
 	return executorinit.Configuration{
 		GardenNetwork:               *gardenNetwork,
@@ -155,6 +161,8 @@ func executorConfig() executorinit.Configuration {
 		MemoryMB:                    *memoryMBFlag,
 		DiskMB:                      *diskMBFlag,
 		MaxConcurrentDownloads:      *maxConcurrentDownloads,
-		Zone:			     *zone,
+		Zone:			     *zone,  	// used for de-zoning VCAP_SERVICES, originally this value is a name of availability zone (z1, z2)
+							// we have slough|hemel so that instances are equally split between DCs.
+		FirewallEnv:		     *firewallEnv,
 	}
 }
