@@ -11,6 +11,7 @@ import (
 	"github.com/cloudfoundry-incubator/rep/maintain"
 	maintain_fakes "github.com/cloudfoundry-incubator/rep/maintain/fakes"
 	"github.com/pivotal-golang/clock/fakeclock"
+	"github.com/pivotal-golang/lager"
 	"github.com/pivotal-golang/lager/lagertest"
 	"github.com/tedsuo/ifrit"
 	"github.com/tedsuo/ifrit/ginkgomon"
@@ -39,7 +40,7 @@ var _ = Describe("Maintain Presence", func() {
 	BeforeEach(func() {
 		pingErrors = make(chan error, 1)
 		fakeClient = &fake_client.FakeClient{
-			PingStub: func() error {
+			PingStub: func(lager.Logger) error {
 				return <-pingErrors
 			},
 		}
@@ -80,7 +81,7 @@ var _ = Describe("Maintain Presence", func() {
 			RetryInterval:   1 * time.Second,
 			RootFSProviders: []string{"provider-1", "provider-2"},
 		}
-		maintainer = maintain.New(config, fakeClient, serviceClient, logger, clock)
+		maintainer = maintain.New(logger, config, fakeClient, serviceClient, 10*time.Second, clock)
 	})
 
 	AfterEach(func() {
@@ -101,14 +102,14 @@ var _ = Describe("Maintain Presence", func() {
 			ready := maintainProcess.Ready()
 
 			for i := 1; i <= 4; i++ {
-				clock.Increment(1 * time.Second)
 				pingErrors <- errors.New("ping failed")
 				Eventually(fakeClient.PingCallCount).Should(Equal(i))
+				clock.WaitForWatcherAndIncrement(1 * time.Second)
 				Expect(ready).NotTo(BeClosed())
 			}
 
 			pingErrors <- nil
-			clock.Increment(1 * time.Second)
+			clock.WaitForWatcherAndIncrement(1 * time.Second)
 			Eventually(fakeClient.PingCallCount).Should(Equal(5))
 
 			Eventually(ready).Should(BeClosed())
@@ -171,6 +172,7 @@ var _ = Describe("Maintain Presence", func() {
 			BeforeEach(func() {
 				pingErrors <- nil
 				maintainProcess = ginkgomon.Invoke(maintainer)
+				Eventually(fakeClient.PingCallCount).Should(Equal(1))
 				Expect(maintainProcess.Ready()).To(BeClosed())
 			})
 
@@ -180,7 +182,7 @@ var _ = Describe("Maintain Presence", func() {
 			})
 
 			It("continues pings the executor on an interval", func() {
-				for i := 1; i < 5; i++ {
+				for i := 2; i < 6; i++ {
 					pingErrors <- nil
 					clock.Increment(1 * time.Second)
 					Eventually(fakeClient.PingCallCount).Should(Equal(i))
@@ -191,6 +193,7 @@ var _ = Describe("Maintain Presence", func() {
 				BeforeEach(func() {
 					pingErrors <- errors.New("failed to ping")
 					clock.Increment(1 * time.Second)
+					Eventually(fakeClient.PingCallCount).Should(Equal(3))
 				})
 
 				It("stops heartbeating the executor's presence", func() {
@@ -198,17 +201,18 @@ var _ = Describe("Maintain Presence", func() {
 				})
 
 				It("continues pinging the executor", func() {
-					for i := 2; i < 6; i++ {
+					clock.Increment(1 * time.Second)
+					for i := 4; i < 8; i++ {
 						pingErrors <- errors.New("failed again")
-						clock.Increment(1 * time.Second)
 						Eventually(fakeClient.PingCallCount).Should(Equal(i))
+						clock.Increment(1 * time.Second)
 					}
 				})
 
 				Context("when the executor ping succeeds again", func() {
 					BeforeEach(func() {
 						pingErrors <- nil
-						Eventually(fakeClient.PingCallCount).Should(Equal(3))
+						Eventually(fakeHeartbeater.RunCallCount).Should(Equal(2))
 						pingErrors <- nil
 						clock.Increment(1 * time.Second)
 						Eventually(fakeClient.PingCallCount).Should(Equal(4))
@@ -219,7 +223,7 @@ var _ = Describe("Maintain Presence", func() {
 					})
 
 					It("continues to ping the executor", func() {
-						for i := 4; i < 6; i++ {
+						for i := 5; i < 7; i++ {
 							pingErrors <- nil
 							clock.Increment(1 * time.Second)
 							Eventually(fakeClient.PingCallCount).Should(Equal(i))

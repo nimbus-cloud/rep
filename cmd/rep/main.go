@@ -25,7 +25,6 @@ import (
 	"github.com/cloudfoundry-incubator/rep/generator"
 	"github.com/cloudfoundry-incubator/rep/handlers"
 	"github.com/cloudfoundry-incubator/rep/harmonizer"
-	"github.com/cloudfoundry-incubator/rep/lrp_stopper"
 	"github.com/cloudfoundry-incubator/rep/maintain"
 	"github.com/cloudfoundry/dropsonde"
 	"github.com/nu7hatch/gouuid"
@@ -86,6 +85,12 @@ var pollingInterval = flag.Duration(
 	"pollingInterval",
 	30*time.Second,
 	"the interval on which to scan the executor",
+)
+
+var dropsondePort = flag.Int(
+	"dropsondePort",
+	3457,
+	"port the local metron agent is listening on",
 )
 
 var communicationTimeout = flag.Duration(
@@ -181,9 +186,19 @@ func (p *providers) Set(value string) error {
 	return nil
 }
 
+type argList []string
+
+func (a *argList) String() string {
+	return fmt.Sprintf("%v", *a)
+}
+
+func (a *argList) Set(value string) error {
+	*a = strings.Split(value, ",")
+	return nil
+}
+
 const (
-	dropsondeDestination = "localhost:3457"
-	dropsondeOrigin      = "rep"
+	dropsondeOrigin = "rep"
 
 	bbsPingTimeout = 5 * time.Minute
 )
@@ -194,17 +209,33 @@ func main() {
 
 	stackMap := stackPathMap{}
 	supportedProviders := providers{}
+	gardenHealthcheckEnv := argList{}
+	gardenHealthcheckArgs := argList{}
 	flag.Var(&stackMap, "preloadedRootFS", "List of preloaded RootFSes")
 	flag.Var(&supportedProviders, "rootFSProvider", "List of RootFS providers")
+	flag.Var(&gardenHealthcheckArgs, "gardenHealthcheckProcessArgs", "List of command line args to pass to the garden health check process")
+	flag.Var(&gardenHealthcheckEnv, "gardenHealthcheckProcessEnv", "Environment variables to use when running the garden health check")
 	flag.Parse()
+
+	preloadedRootFSes := []string{}
+	for k := range stackMap {
+		preloadedRootFSes = append(preloadedRootFSes, k)
+	}
 
 	cf_http.Initialize(*communicationTimeout)
 
 	clock := clock.NewClock()
 	logger, reconfigurableSink := cf_lager.New(*sessionName)
 
-	executorConfiguration := executorConfig()
-	if !executorinit.ValidateExecutor(logger, executorConfiguration) {
+	var executorConfiguration executorinit.Configuration
+	var gardenHealthcheckRootFS string
+	if len(preloadedRootFSes) == 0 {
+		gardenHealthcheckRootFS = ""
+	} else {
+		gardenHealthcheckRootFS = stackMap[preloadedRootFSes[0]]
+	}
+	executorConfiguration = executorConfig(gardenHealthcheckRootFS, gardenHealthcheckArgs, gardenHealthcheckEnv)
+	if !executorConfiguration.Validate(logger) {
 		os.Exit(1)
 	}
 
@@ -218,7 +249,7 @@ func main() {
 	if err != nil {
 		log.Fatalf("Failed to initialize executor: %s", err.Error())
 	}
-	defer executorClient.Cleanup()
+	defer executorClient.Cleanup(logger)
 
 	if err := validateBBSAddress(); err != nil {
 		logger.Fatal("invalid-bbs-address", err)
@@ -244,15 +275,12 @@ func main() {
 	bbsClient := initializeBBSClient(logger)
 	httpServer, address := initializeServer(bbsClient, executorClient, evacuatable, evacuationReporter, logger, rep.StackPathMap(stackMap), supportedProviders)
 	opGenerator := generator.New(*cellID, bbsClient, executorClient, evacuationReporter, uint64(evacuationTimeout.Seconds()))
-
-	preloadedRootFSes := []string{}
-	for k := range stackMap {
-		preloadedRootFSes = append(preloadedRootFSes, k)
-	}
+	cleanup := evacuation.NewEvacuationCleanup(logger, *cellID, bbsClient)
 
 	members := grouper.Members{
 		{"http_server", httpServer},
 		{"presence", initializeCellPresence(address, serviceClient, executorClient, logger, supportedProviders, preloadedRootFSes)},
+		{"evacuation-cleanup", cleanup},
 		{"bulker", harmonizer.NewBulker(logger, *pollingInterval, *evacuationPollingInterval, evacuationNotifier, clock, opGenerator, queue)},
 		{"event-consumer", harmonizer.NewEventConsumer(logger, opGenerator, queue)},
 		{"evacuator", evacuator},
@@ -282,6 +310,7 @@ func main() {
 }
 
 func initializeDropsonde(logger lager.Logger) {
+	dropsondeDestination := fmt.Sprint("localhost:", *dropsondePort)
 	err := dropsonde.Initialize(dropsondeDestination, dropsondeOrigin)
 	if err != nil {
 		logger.Error("failed to initialize dropsonde: %v", err)
@@ -297,26 +326,16 @@ func initializeCellPresence(address string, serviceClient bbs.ServiceClient, exe
 		RootFSProviders:   rootFSProviders,
 		PreloadedRootFSes: preloadedRootFSes,
 	}
-	return maintain.New(config, executorClient, serviceClient, logger, clock.NewClock())
+	return maintain.New(logger, config, executorClient, serviceClient, *lockTTL, clock.NewClock())
 }
 
 func initializeServiceClient(logger lager.Logger) bbs.ServiceClient {
-	client, err := consuladapter.NewClient(*consulCluster)
+	consulClient, err := consuladapter.NewClientFromUrl(*consulCluster)
 	if err != nil {
 		logger.Fatal("new-client-failed", err)
 	}
 
-	sessionMgr := consuladapter.NewSessionManager(client)
-	consulSession, err := consuladapter.NewSessionNoChecks(*sessionName, *lockTTL, client, sessionMgr)
-	if err != nil {
-		logger.Fatal("consul-session-failed", err)
-	}
-
-	return bbs.NewServiceClient(consulSession, clock.NewClock())
-}
-
-func initializeLRPStopper(guid string, executorClient executor.Client, logger lager.Logger) lrp_stopper.LRPStopper {
-	return lrp_stopper.New(guid, executorClient, logger)
+	return bbs.NewServiceClient(consulClient, clock.NewClock())
 }
 
 func initializeServer(
@@ -328,10 +347,9 @@ func initializeServer(
 	stackMap rep.StackPathMap,
 	supportedProviders []string,
 ) (ifrit.Runner, string) {
-	lrpStopper := initializeLRPStopper(*cellID, executorClient, logger)
 
 	auctionCellRep := auction_cell_rep.New(*cellID, stackMap, supportedProviders, *zone, generateGuid, executorClient, evacuationReporter, logger)
-	handlers := handlers.New(auctionCellRep, lrpStopper, executorClient, evacuatable, logger)
+	handlers := handlers.New(auctionCellRep, executorClient, evacuatable, logger)
 
 	router, err := rata.NewRouter(rep.Routes, handlers)
 	if err != nil {

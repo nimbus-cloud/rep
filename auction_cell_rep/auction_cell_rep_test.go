@@ -44,6 +44,7 @@ var _ = Describe("AuctionCellRep", func() {
 		linuxRootFSURL = models.PreloadedRootFS(linuxStack)
 
 		commonErr = errors.New("Failed to fetch")
+		client.HealthyReturns(true)
 	})
 
 	JustBeforeEach(func() {
@@ -54,6 +55,7 @@ var _ = Describe("AuctionCellRep", func() {
 		var (
 			availableResources, totalResources executor.ExecutorResources
 			containers                         []executor.Container
+			volumeDrivers                      []string
 		)
 
 		BeforeEach(func() {
@@ -80,6 +82,7 @@ var _ = Describe("AuctionCellRep", func() {
 						rep.ProcessIndexTag: "17",
 						rep.DomainTag:       "domain",
 					},
+					State: executor.StateReserved,
 				},
 				{
 					Guid:     "second",
@@ -90,6 +93,7 @@ var _ = Describe("AuctionCellRep", func() {
 						rep.ProcessIndexTag: "92",
 						rep.DomainTag:       "domain",
 					},
+					State: executor.StateInitializing,
 				},
 				{
 					Guid:     "da-task",
@@ -98,25 +102,27 @@ var _ = Describe("AuctionCellRep", func() {
 						rep.LifecycleTag: rep.TaskLifecycle,
 						rep.DomainTag:    "domain",
 					},
+					State: executor.StateCreated,
 				},
 				{
 					Guid:     "other-task",
 					Resource: executor.NewResource(40, 30, "rootfs"),
 					Tags:     nil,
+					State:    executor.StateRunning,
 				},
 			}
 
+			volumeDrivers = []string{"lewis", "nico", "sebastian", "felipe"}
+
 			client.TotalResourcesReturns(totalResources, nil)
-			client.RemainingResourcesFromReturns(availableResources, nil)
+			client.RemainingResourcesReturns(availableResources, nil)
 			client.ListContainersReturns(containers, nil)
+			client.VolumeDriversReturns(volumeDrivers, nil)
 		})
 
 		It("queries the client and returns state", func() {
 			state, err := cellRep.State()
 			Expect(err).NotTo(HaveOccurred())
-
-			Expect(client.ListContainersArgsForCall(0)).To(Equal(executor.Tags{}))
-			Expect(client.RemainingResourcesFromArgsForCall(0)).To(Equal(containers))
 
 			Expect(state.Evacuating).To(BeTrue())
 			Expect(state.RootFSProviders).To(Equal(rep.RootFSProviders{
@@ -137,13 +143,28 @@ var _ = Describe("AuctionCellRep", func() {
 			}))
 
 			Expect(state.LRPs).To(ConsistOf([]rep.LRP{
-				rep.NewLRP(models.NewActualLRPKey("the-first-app-guid", 17, "domain"), rep.NewResource(20, 10, "")),
-				rep.NewLRP(models.NewActualLRPKey("the-second-app-guid", 92, "domain"), rep.NewResource(40, 30, "")),
+				rep.NewLRP(models.NewActualLRPKey("the-first-app-guid", 17, "domain"), rep.NewResource(20, 10, "", nil)),
+				rep.NewLRP(models.NewActualLRPKey("the-second-app-guid", 92, "domain"), rep.NewResource(40, 30, "", nil)),
 			}))
 
 			Expect(state.Tasks).To(ConsistOf([]rep.Task{
-				rep.NewTask("da-task", "domain", rep.NewResource(40, 30, "")),
+				rep.NewTask("da-task", "domain", rep.NewResource(40, 30, "", nil)),
 			}))
+
+			Expect(state.StartingContainerCount).To(Equal(3))
+
+			Expect(state.VolumeDrivers).To(ConsistOf(volumeDrivers))
+		})
+
+		Context("when the cell is not healthy", func() {
+			BeforeEach(func() {
+				client.HealthyReturns(false)
+			})
+
+			It("errors when reporting state", func() {
+				_, err := cellRep.State()
+				Expect(err).To(MatchError(auction_cell_rep.ErrCellUnhealthy))
+			})
 		})
 
 		Context("when the client fails to fetch total resources", func() {
@@ -160,7 +181,7 @@ var _ = Describe("AuctionCellRep", func() {
 
 		Context("when the client fails to fetch available resources", func() {
 			BeforeEach(func() {
-				client.RemainingResourcesFromReturns(executor.ExecutorResources{}, commonErr)
+				client.RemainingResourcesReturns(executor.ExecutorResources{}, commonErr)
 			})
 
 			It("should return an error and no state", func() {
@@ -197,9 +218,9 @@ var _ = Describe("AuctionCellRep", func() {
 
 				lrp := rep.NewLRP(
 					models.NewActualLRPKey("process-guid", int32(expectedIndex), "tests"),
-					rep.NewResource(2048, 1024, linuxRootFSURL),
+					rep.NewResource(2048, 1024, linuxRootFSURL, []string{}),
 				)
-				task := rep.NewTask("the-task-guid", "tests", rep.NewResource(2048, 1024, linuxRootFSURL))
+				task := rep.NewTask("the-task-guid", "tests", rep.NewResource(2048, 1024, linuxRootFSURL, []string{}))
 
 				work = rep.Work{
 					LRPs:  []rep.LRP{lrp},
@@ -242,11 +263,11 @@ var _ = Describe("AuctionCellRep", func() {
 
 				lrpAuctionOne = rep.NewLRP(
 					models.NewActualLRPKey("process-guid", expectedIndexOne, "tests"),
-					rep.NewResource(2048, 1024, "rootfs"),
+					rep.NewResource(2048, 1024, "rootfs", []string{}),
 				)
 				lrpAuctionTwo = rep.NewLRP(
 					models.NewActualLRPKey("process-guid", expectedIndexTwo, "tests"),
-					rep.NewResource(2048, 1024, "rootfs"),
+					rep.NewResource(2048, 1024, "rootfs", []string{}),
 				)
 			})
 
@@ -263,7 +284,8 @@ var _ = Describe("AuctionCellRep", func() {
 					Expect(err).NotTo(HaveOccurred())
 
 					Expect(client.AllocateContainersCallCount()).To(Equal(1))
-					Expect(client.AllocateContainersArgsForCall(0)).To(ConsistOf(
+					_, arg := client.AllocateContainersArgsForCall(0)
+					Expect(arg).To(ConsistOf(
 						executor.AllocationRequest{
 							Guid: rep.LRPContainerGuid(lrpAuctionOne.ProcessGuid, expectedGuidOne),
 							Tags: executor.Tags{
@@ -334,7 +356,8 @@ var _ = Describe("AuctionCellRep", func() {
 					Expect(err).NotTo(HaveOccurred())
 
 					Expect(client.AllocateContainersCallCount()).To(Equal(1))
-					Expect(client.AllocateContainersArgsForCall(0)).To(ConsistOf(
+					_, arg := client.AllocateContainersArgsForCall(0)
+					Expect(arg).To(ConsistOf(
 						executor.AllocationRequest{
 							Guid: rep.LRPContainerGuid(lrpAuctionOne.ProcessGuid, expectedGuidOne),
 							Tags: executor.Tags{
@@ -399,7 +422,8 @@ var _ = Describe("AuctionCellRep", func() {
 					Expect(err).NotTo(HaveOccurred())
 
 					Expect(client.AllocateContainersCallCount()).To(Equal(1))
-					Expect(client.AllocateContainersArgsForCall(0)).To(ConsistOf(
+					_, arg := client.AllocateContainersArgsForCall(0)
+					Expect(arg).To(ConsistOf(
 						executor.AllocationRequest{
 							Guid: rep.LRPContainerGuid(lrpAuctionOne.ProcessGuid, expectedGuidOne),
 							Tags: executor.Tags{
@@ -426,7 +450,8 @@ var _ = Describe("AuctionCellRep", func() {
 					Expect(err).NotTo(HaveOccurred())
 
 					Expect(client.AllocateContainersCallCount()).To(Equal(1))
-					Expect(client.AllocateContainersArgsForCall(0)).To(ConsistOf(
+					_, arg := client.AllocateContainersArgsForCall(0)
+					Expect(arg).To(ConsistOf(
 						executor.AllocationRequest{
 							Guid: rep.LRPContainerGuid(lrpAuctionOne.ProcessGuid, expectedGuidOne),
 							Tags: executor.Tags{
@@ -486,10 +511,10 @@ var _ = Describe("AuctionCellRep", func() {
 			var task1, task2 rep.Task
 
 			BeforeEach(func() {
-				resource1 := rep.NewResource(256, 512, "linux")
+				resource1 := rep.NewResource(256, 512, "linux", []string{})
 				task1 = rep.NewTask("the-task-guid-1", "tests", resource1)
 
-				resource2 := rep.NewResource(512, 1024, "linux")
+				resource2 := rep.NewResource(512, 1024, "linux", []string{})
 				task2 = rep.NewTask("the-task-guid-2", "tests", resource2)
 
 				work = rep.Work{Tasks: []rep.Task{task}}
@@ -506,7 +531,8 @@ var _ = Describe("AuctionCellRep", func() {
 					Expect(err).NotTo(HaveOccurred())
 
 					Expect(client.AllocateContainersCallCount()).To(Equal(1))
-					Expect(client.AllocateContainersArgsForCall(0)).To(ConsistOf(
+					_, arg := client.AllocateContainersArgsForCall(0)
+					Expect(arg).To(ConsistOf(
 						allocationRequestFromTask(task1, linuxPath),
 						allocationRequestFromTask(task2, task2.RootFs),
 					))
@@ -556,7 +582,8 @@ var _ = Describe("AuctionCellRep", func() {
 					Expect(err).NotTo(HaveOccurred())
 
 					Expect(client.AllocateContainersCallCount()).To(Equal(1))
-					Expect(client.AllocateContainersArgsForCall(0)).To(ConsistOf(
+					_, arg := client.AllocateContainersArgsForCall(0)
+					Expect(arg).To(ConsistOf(
 						allocationRequestFromTask(task1, linuxPath),
 					))
 				})
@@ -604,7 +631,8 @@ var _ = Describe("AuctionCellRep", func() {
 					Expect(err).NotTo(HaveOccurred())
 
 					Expect(client.AllocateContainersCallCount()).To(Equal(1))
-					Expect(client.AllocateContainersArgsForCall(0)).To(ConsistOf(
+					_, arg := client.AllocateContainersArgsForCall(0)
+					Expect(arg).To(ConsistOf(
 						allocationRequestFromTask(task1, ""),
 					))
 				})
@@ -621,7 +649,8 @@ var _ = Describe("AuctionCellRep", func() {
 					Expect(err).NotTo(HaveOccurred())
 
 					Expect(client.AllocateContainersCallCount()).To(Equal(1))
-					Expect(client.AllocateContainersArgsForCall(0)).To(ConsistOf(
+					_, arg := client.AllocateContainersArgsForCall(0)
+					Expect(arg).To(ConsistOf(
 						allocationRequestFromTask(task1, linuxPath),
 					))
 				})

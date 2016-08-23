@@ -13,6 +13,7 @@ import (
 )
 
 var ErrPreloadedRootFSNotFound = errors.New("preloaded rootfs path not found")
+var ErrCellUnhealthy = errors.New("internal cell healthcheck failed")
 
 type AuctionCellRep struct {
 	cellID               string
@@ -90,21 +91,34 @@ func (a *AuctionCellRep) State() (rep.CellState, error) {
 	logger := a.logger.Session("auction-state")
 	logger.Info("providing")
 
-	containers, err := a.client.ListContainers(executor.Tags{})
+	// Fail quickly if cached internal health is sick
+	healthy := a.client.Healthy(logger)
+	if !healthy {
+		logger.Error("failed-garden-health-check", nil)
+		return rep.CellState{}, ErrCellUnhealthy
+	}
+
+	containers, err := a.client.ListContainers(logger)
 	if err != nil {
 		logger.Error("failed-to-fetch-containers", err)
 		return rep.CellState{}, err
 	}
 
-	totalResources, err := a.client.TotalResources()
+	totalResources, err := a.client.TotalResources(logger)
 	if err != nil {
 		logger.Error("failed-to-get-total-resources", err)
 		return rep.CellState{}, err
 	}
 
-	availableResources, err := a.client.RemainingResourcesFrom(containers)
+	availableResources, err := a.client.RemainingResources(logger)
 	if err != nil {
 		logger.Error("failed-to-get-remaining-resource", err)
+		return rep.CellState{}, err
+	}
+
+	volumeDrivers, err := a.client.VolumeDrivers(logger)
+	if err != nil {
+		logger.Error("failed-to-get-volume-drivers", err)
 		return rep.CellState{}, err
 	}
 
@@ -112,10 +126,15 @@ func (a *AuctionCellRep) State() (rep.CellState, error) {
 	var keyErr error
 	lrps := []rep.LRP{}
 	tasks := []rep.Task{}
+	startingContainerCount := 0
 
 	for i := range containers {
 		container := &containers[i]
 		resource := rep.Resource{MemoryMB: int32(container.MemoryMB), DiskMB: int32(container.DiskMB)}
+
+		if containerIsStarting(container) {
+			startingContainerCount++
+		}
 
 		if container.Tags == nil {
 			logger.Error("failed-to-extract-container-tags", nil)
@@ -143,7 +162,9 @@ func (a *AuctionCellRep) State() (rep.CellState, error) {
 		lrps,
 		tasks,
 		a.zone,
+		startingContainerCount,
 		a.evacuationReporter.Evacuating(),
+		volumeDrivers,
 	)
 
 	a.logger.Info("provided", lager.Data{
@@ -155,6 +176,12 @@ func (a *AuctionCellRep) State() (rep.CellState, error) {
 	})
 
 	return state, nil
+}
+
+func containerIsStarting(container *executor.Container) bool {
+	return container.State == executor.StateReserved ||
+		container.State == executor.StateInitializing ||
+		container.State == executor.StateCreated
 }
 
 func (a *AuctionCellRep) Perform(work rep.Work) (rep.Work, error) {
@@ -179,7 +206,7 @@ func (a *AuctionCellRep) Perform(work rep.Work) (rep.Work, error) {
 		}
 
 		lrpLogger.Info("requesting-container-allocation", lager.Data{"num-requesting-allocation": len(requests)})
-		failures, err := a.client.AllocateContainers(requests)
+		failures, err := a.client.AllocateContainers(logger, requests)
 		if err != nil {
 			lrpLogger.Error("failed-requesting-container-allocation", err)
 			failedWork.LRPs = work.LRPs
@@ -205,7 +232,7 @@ func (a *AuctionCellRep) Perform(work rep.Work) (rep.Work, error) {
 		}
 
 		taskLogger.Info("requesting-container-allocation", lager.Data{"num-requesting-allocation": len(requests)})
-		failures, err := a.client.AllocateContainers(requests)
+		failures, err := a.client.AllocateContainers(logger, requests)
 		if err != nil {
 			taskLogger.Error("failed-requesting-container-allocation", err)
 			failedWork.Tasks = work.Tasks

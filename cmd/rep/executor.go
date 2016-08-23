@@ -36,10 +36,16 @@ var tempDir = flag.String(
 	"location to store temporary assets",
 )
 
-var registryPruningInterval = flag.Duration(
-	"pruneInterval",
-	executorinit.DefaultConfiguration.RegistryPruningInterval,
+var reservedExpirationTime = flag.Duration(
+	"reservedExpirationTime",
+	executorinit.DefaultConfiguration.ReservedExpirationTime,
 	"amount of time during which a container can remain in the allocated state",
+)
+
+var containerReapInterval = flag.Duration(
+	"containerReapInterval",
+	executorinit.DefaultConfiguration.ContainerReapInterval,
+	"interval at which the executor reaps extra/missing containers",
 )
 
 var containerInodeLimit = flag.Uint64(
@@ -132,37 +138,111 @@ var maxConcurrentDownloads = flag.Int(
 	"Number of concurrent download steps",
 )
 
+var gardenHealthcheckInterval = flag.Duration(
+	"gardenHealthcheckInterval",
+	executorinit.DefaultConfiguration.GardenHealthcheckInterval,
+	"Frequency for healthchecking garden",
+)
+
+var gardenHealthcheckTimeout = flag.Duration(
+	"gardenHealthcheckTimeout",
+	executorinit.DefaultConfiguration.GardenHealthcheckTimeout,
+	"Maximum allowed time for garden healthcheck",
+)
+
+var gardenHealthcheckCommandRetryPause = flag.Duration(
+	"gardenHealthcheckCommandRetryPause",
+	executorinit.DefaultConfiguration.GardenHealthcheckCommandRetryPause,
+	"Time to wait between retrying garden commands",
+)
+
+var gardenHealthcheckProcessPath = flag.String(
+	"gardenHealthcheckProcessPath",
+	executorinit.DefaultConfiguration.GardenHealthcheckProcessPath,
+	"Path of the command to run to perform a container healthcheck",
+)
+
+var gardenHealthcheckProcessUser = flag.String(
+	"gardenHealthcheckProcessUser",
+	executorinit.DefaultConfiguration.GardenHealthcheckProcessUser,
+	"User to use while performing a container healthcheck",
+)
+
+var gardenHealthcheckProcessDir = flag.String(
+	"gardenHealthcheckProcessDir",
+	executorinit.DefaultConfiguration.GardenHealthcheckProcessDir,
+	"Directory to run the healthcheck process from",
+)
+
+var postSetupHook = flag.String(
+	"postSetupHook",
+	"",
+	"Set of commands to run after the setup action",
+)
+
+var postSetupUser = flag.String(
+	"postSetupUser",
+	"root",
+	"User to run the post setup hook",
+)
+
+var trustedSystemCertificatesPath = flag.String(
+	"trustedSystemCertificatesPath",
+	"",
+	"path to directory containing trusted system ca certs.",
+)
+
+var volmanDriverPath = flag.String(
+	"volmanDriverConfigDir",
+	executorinit.DefaultConfiguration.VolmanDriverPath,
+	"path to directory containing volume manager drivers",
+)
+
 var firewallEnv = flag.String(
 	"firewallEnv",
 	"",
 	"nimbus2 firewall env, one of: test|dev|stage|prod",
 )
 
-func executorConfig() executorinit.Configuration {
+func executorConfig(gardenHealthcheckRootFS string, gardenHealthcheckArgs, gardenHealthcheckEnv []string) executorinit.Configuration {
 	return executorinit.Configuration{
-		GardenNetwork:               *gardenNetwork,
-		GardenAddr:                  *gardenAddr,
-		ContainerOwnerName:          *containerOwnerName,
-		TempDir:                     *tempDir,
-		CachePath:                   *cachePath,
-		MaxCacheSizeInBytes:         *maxCacheSizeInBytes,
-		SkipCertVerify:              *skipCertVerify,
-		ExportNetworkEnvVars:        *exportNetworkEnvVars,
-		ContainerMaxCpuShares:       *containerMaxCpuShares,
-		ContainerInodeLimit:         *containerInodeLimit,
-		HealthyMonitoringInterval:   *healthyMonitoringInterval,
-		UnhealthyMonitoringInterval: *unhealthyMonitoringInterval,
-		HealthCheckWorkPoolSize:     *healthCheckWorkPoolSize,
-		CreateWorkPoolSize:          *createWorkPoolSize,
-		DeleteWorkPoolSize:          *deleteWorkPoolSize,
-		ReadWorkPoolSize:            *readWorkPoolSize,
-		MetricsWorkPoolSize:         *metricsWorkPoolSize,
-		RegistryPruningInterval:     *registryPruningInterval,
-		MemoryMB:                    *memoryMBFlag,
-		DiskMB:                      *diskMBFlag,
-		MaxConcurrentDownloads:      *maxConcurrentDownloads,
-		Zone:			     *zone,  	// used for de-zoning VCAP_SERVICES, originally this value is a name of availability zone (z1, z2)
-							// we have slough|hemel so that instances are equally split between DCs.
-		FirewallEnv:		     *firewallEnv,
+		GardenNetwork:                      *gardenNetwork,
+		GardenAddr:                         *gardenAddr,
+		ContainerOwnerName:                 *containerOwnerName,
+		TempDir:                            *tempDir,
+		CachePath:                          *cachePath,
+		MaxCacheSizeInBytes:                *maxCacheSizeInBytes,
+		SkipCertVerify:                     *skipCertVerify,
+		ExportNetworkEnvVars:               *exportNetworkEnvVars,
+		ContainerMaxCpuShares:              *containerMaxCpuShares,
+		ContainerInodeLimit:                *containerInodeLimit,
+		HealthyMonitoringInterval:          *healthyMonitoringInterval,
+		UnhealthyMonitoringInterval:        *unhealthyMonitoringInterval,
+		HealthCheckWorkPoolSize:            *healthCheckWorkPoolSize,
+		CreateWorkPoolSize:                 *createWorkPoolSize,
+		DeleteWorkPoolSize:                 *deleteWorkPoolSize,
+		ReadWorkPoolSize:                   *readWorkPoolSize,
+		MetricsWorkPoolSize:                *metricsWorkPoolSize,
+		ReservedExpirationTime:             *reservedExpirationTime,
+		ContainerReapInterval:              *containerReapInterval,
+		MemoryMB:                           *memoryMBFlag,
+		DiskMB:                             *diskMBFlag,
+		MaxConcurrentDownloads:             *maxConcurrentDownloads,
+		GardenHealthcheckInterval:          *gardenHealthcheckInterval,
+		GardenHealthcheckTimeout:           *gardenHealthcheckTimeout,
+		GardenHealthcheckCommandRetryPause: *gardenHealthcheckCommandRetryPause,
+		GardenHealthcheckRootFS:            gardenHealthcheckRootFS,
+		GardenHealthcheckProcessPath:       *gardenHealthcheckProcessPath,
+		GardenHealthcheckProcessUser:       *gardenHealthcheckProcessUser,
+		GardenHealthcheckProcessDir:        *gardenHealthcheckProcessDir,
+		GardenHealthcheckProcessArgs:       gardenHealthcheckArgs,
+		GardenHealthcheckProcessEnv:        gardenHealthcheckEnv,
+		PostSetupHook:                      *postSetupHook,
+		PostSetupUser:                      *postSetupUser,
+		TrustedSystemCertificatesPath:      *trustedSystemCertificatesPath,
+		VolmanDriverPath:                   *volmanDriverPath,
+		Zone:			     	    *zone,  	// used for de-zoning VCAP_SERVICES, originally this value is a name of availability zone (z1, z2)
+								// we have slough|hemel so that instances are equally split between DCs.
+		FirewallEnv:		     	    *firewallEnv,
 	}
 }

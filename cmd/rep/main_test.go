@@ -1,24 +1,22 @@
 package main_test
 
 import (
+	"encoding/json"
 	"fmt"
-	"io/ioutil"
 	"net/http"
+	"regexp"
 	"runtime"
-	"strconv"
 	"time"
 
 	"github.com/cloudfoundry-incubator/bbs"
 	"github.com/cloudfoundry-incubator/bbs/models"
 	"github.com/cloudfoundry-incubator/bbs/models/test/model_helpers"
 	"github.com/cloudfoundry-incubator/cf_http"
-	"github.com/cloudfoundry-incubator/executor"
-	"github.com/cloudfoundry-incubator/executor/depot/gardenstore"
+	"github.com/cloudfoundry-incubator/executor/gardenhealth"
 	"github.com/cloudfoundry-incubator/garden"
+	"github.com/cloudfoundry-incubator/garden/transport"
 	"github.com/cloudfoundry-incubator/rep"
 	"github.com/cloudfoundry-incubator/rep/cmd/rep/testrunner"
-	"github.com/hashicorp/consul/api"
-	"github.com/pivotal-golang/clock"
 	"github.com/pivotal-golang/lager"
 	"github.com/pivotal-golang/lager/lagertest"
 
@@ -34,7 +32,6 @@ var runner *testrunner.Runner
 var _ = Describe("The Rep", func() {
 	var (
 		fakeGarden        *ghttp.Server
-		serviceClient     bbs.ServiceClient
 		pollingInterval   time.Duration
 		evacuationTimeout time.Duration
 		rootFSName        string
@@ -62,8 +59,23 @@ var _ = Describe("The Rep", func() {
 			garden.Capacity{MemoryInBytes: 1024 * 1024 * 1024, DiskInBytes: 2048 * 1024 * 1024, MaxContainers: 4}))
 		fakeGarden.RouteToHandler("GET", "/containers/bulk_info", ghttp.RespondWithJSONEncoded(http.StatusOK, struct{}{}))
 
+		// The following handlers are needed to fake out the healthcheck containers
+		fakeGarden.RouteToHandler("POST", "/containers", ghttp.RespondWithJSONEncoded(http.StatusOK, map[string]string{"handle": "healthcheck-container"}))
+		fakeGarden.RouteToHandler("DELETE", regexp.MustCompile("/containers/executor-healthcheck-[-a-f0-9]+"), ghttp.RespondWithJSONEncoded(http.StatusOK, struct{}{}))
+		fakeGarden.RouteToHandler("POST", "/containers/healthcheck-container/processes", func() http.HandlerFunc {
+			firstResponse, err := json.Marshal(transport.ProcessPayload{})
+			Expect(err).NotTo(HaveOccurred())
+
+			exitStatus := 0
+			secondResponse, err := json.Marshal(transport.ProcessPayload{ExitStatus: &exitStatus})
+			Expect(err).NotTo(HaveOccurred())
+
+			headers := http.Header{"Content-Type": []string{"application/json"}}
+			response := string(firstResponse) + string(secondResponse)
+			return ghttp.RespondWith(http.StatusOK, response, headers)
+		}())
+
 		logger = lagertest.NewTestLogger("test")
-		serviceClient = bbs.NewServiceClient(consulSession, clock.NewClock())
 
 		pollingInterval = 50 * time.Millisecond
 		evacuationTimeout = 200 * time.Millisecond
@@ -137,22 +149,29 @@ var _ = Describe("The Rep", func() {
 			var deleteChan chan struct{}
 			BeforeEach(func() {
 				fakeGarden.RouteToHandler("GET", "/containers",
-					ghttp.RespondWithJSONEncoded(http.StatusOK, map[string][]string{"handles": []string{"cnr1", "cnr2"}}),
+					func(w http.ResponseWriter, r *http.Request) {
+						r.ParseForm()
+						healthcheckTagQueryParam := gardenhealth.HealthcheckTag
+						if r.FormValue(healthcheckTagQueryParam) == gardenhealth.HealthcheckTagValue {
+							ghttp.RespondWithJSONEncoded(http.StatusOK, struct{}{})(w, r)
+						} else {
+							ghttp.RespondWithJSONEncoded(http.StatusOK, map[string][]string{"handles": []string{"cnr1", "cnr2"}})(w, r)
+						}
+					},
 				)
-
 				deleteChan = make(chan struct{}, 2)
-				fakeGarden.AppendHandlers(
-					ghttp.CombineHandlers(ghttp.VerifyRequest("DELETE", "/containers/cnr1"),
+				fakeGarden.RouteToHandler("DELETE", "/containers/cnr1",
+					ghttp.CombineHandlers(
 						func(http.ResponseWriter, *http.Request) {
 							deleteChan <- struct{}{}
 						},
-						ghttp.RespondWithJSONEncoded(http.StatusOK, &struct{}{})),
-					ghttp.CombineHandlers(ghttp.VerifyRequest("DELETE", "/containers/cnr2"),
+						ghttp.RespondWithJSONEncoded(http.StatusOK, &struct{}{})))
+				fakeGarden.RouteToHandler("DELETE", "/containers/cnr2",
+					ghttp.CombineHandlers(
 						func(http.ResponseWriter, *http.Request) {
 							deleteChan <- struct{}{}
 						},
-						ghttp.RespondWithJSONEncoded(http.StatusOK, &struct{}{})),
-				)
+						ghttp.RespondWithJSONEncoded(http.StatusOK, &struct{}{})))
 			})
 
 			It("destroys any existing containers", func() {
@@ -162,49 +181,13 @@ var _ = Describe("The Rep", func() {
 		})
 
 		Describe("maintaining presence", func() {
-			var cellPresence *models.CellPresence
-
-			JustBeforeEach(func() {
-				Eventually(fetchCells(logger, serviceClient)).Should(HaveLen(1))
-				cells, err := serviceClient.Cells(logger)
-				Expect(err).NotTo(HaveOccurred())
-				cellPresence = cells[cellID]
-			})
-
 			It("should maintain presence", func() {
-				Expect(cellPresence.CellID).To(Equal(cellID))
-				expectedRootFSProviders := map[string][]string{
-					"docker":    []string{},
-					"preloaded": []string{"the-rootfs"},
-				}
-				Expect(cellPresence.RootFSProviders).To(Equal(expectedRootFSProviders))
-			})
-
-			It("should have no session health checks", func() {
-				sessions, _, err := consulRunner.NewClient().Session().List(nil)
+				Eventually(fetchCells(logger)).Should(HaveLen(1))
+				cells, err := bbsClient.Cells()
+				cellSet := models.NewCellSetFromList(cells)
 				Expect(err).NotTo(HaveOccurred())
-
-				var repSessions []*api.SessionEntry
-				for _, sess := range sessions {
-					if sess.Name == "rep" {
-						repSessions = append(repSessions, sess)
-					}
-				}
-				Expect(repSessions).To(HaveLen(1))
-				Expect(repSessions[0].Checks).To(BeEmpty())
-			})
-
-			Context("when the presence fails to be maintained", func() {
-				It("should not exit, but keep trying to maintain presence at the same ID", func() {
-					consulRunner.Reset()
-
-					Eventually(fetchCells(logger, serviceClient), 5).Should(HaveLen(1))
-					cells, err := serviceClient.Cells(logger)
-					Expect(err).NotTo(HaveOccurred())
-					Expect(cells[cellID]).To(Equal(cellPresence))
-
-					Expect(runner.Session).NotTo(Exit())
-				})
+				cellPresence := cellSet[cellID]
+				Expect(cellPresence.CellId).To(Equal(cellID))
 			})
 		})
 
@@ -212,36 +195,15 @@ var _ = Describe("The Rep", func() {
 			var client rep.Client
 
 			JustBeforeEach(func() {
-				Eventually(fetchCells(logger, serviceClient)).Should(HaveLen(1))
-				cells, err := serviceClient.Cells(logger)
+				Eventually(fetchCells(logger)).Should(HaveLen(1))
+				cells, err := bbsClient.Cells()
+				cellSet := models.NewCellSetFromList(cells)
 				Expect(err).NotTo(HaveOccurred())
 
-				client = rep.NewClient(http.DefaultClient, cf_http.NewCustomTimeoutClient(100*time.Millisecond), cells[cellID].RepAddress)
+				client = rep.NewClient(http.DefaultClient, cf_http.NewCustomTimeoutClient(100*time.Millisecond), cellSet[cellID].RepAddress)
 			})
 
 			Context("Capacity with a container", func() {
-				BeforeEach(func() {
-					fakeGarden.RouteToHandler("GET", "/containers",
-						ghttp.RespondWithJSONEncoded(http.StatusOK, map[string][]string{"handles": []string{"handle-guid"}}),
-					)
-					fakeGarden.RouteToHandler("GET", "/containers/bulk_info",
-						ghttp.RespondWithJSONEncoded(http.StatusOK,
-							map[string]garden.ContainerInfoEntry{
-								"handle-guid": garden.ContainerInfoEntry{Info: garden.ContainerInfo{
-									Properties: map[string]string{
-										gardenstore.ContainerStateProperty:    string(executor.StateRunning),
-										gardenstore.ContainerMemoryMBProperty: "512", gardenstore.ContainerDiskMBProperty: "1024"},
-								}},
-							},
-						),
-					)
-
-					fakeGarden.RouteToHandler("DELETE", "/containers/handle-guid", ghttp.RespondWithJSONEncoded(http.StatusOK, &struct{}{}))
-
-					// In case the bulker loop is executed
-					fakeGarden.RouteToHandler("GET", "/containers/handle-guid/info", ghttp.RespondWithJSONEncoded(http.StatusInternalServerError, garden.ContainerInfo{}))
-				})
-
 				It("returns total capacity", func() {
 					state, err := client.State()
 					Expect(err).NotTo(HaveOccurred())
@@ -249,18 +211,6 @@ var _ = Describe("The Rep", func() {
 						MemoryMB:   1024,
 						DiskMB:     2048,
 						Containers: 4,
-					}))
-				})
-
-				It("returns available capacity", func() {
-					Eventually(func() rep.Resources {
-						state, err := client.State()
-						Expect(err).NotTo(HaveOccurred())
-						return state.AvailableResources
-					}).Should(Equal(rep.Resources{
-						MemoryMB:   512,
-						DiskMB:     1024,
-						Containers: 3,
 					}))
 				})
 
@@ -279,71 +229,6 @@ var _ = Describe("The Rep", func() {
 							Containers: 4,
 						}))
 					})
-				})
-
-				Context("when garden takes too long to list containers", func() {
-					BeforeEach(func() {
-						fakeGarden.RouteToHandler("GET", "/containers/bulk_info", func(w http.ResponseWriter, r *http.Request) {
-							time.Sleep(200 * time.Millisecond)
-							w.WriteHeader(http.StatusOK)
-							w.Write([]byte("{}"))
-						})
-					})
-
-					It("times out", func() {
-						_, err := client.State()
-						Expect(err).To(HaveOccurred())
-					})
-				})
-			})
-
-			Describe("running tasks", func() {
-				var task rep.Task
-				var containersCalled chan struct{}
-
-				JustBeforeEach(func() {
-					containersCalled = make(chan struct{})
-					fakeGarden.RouteToHandler("POST", "/containers", ghttp.CombineHandlers(
-						ghttp.RespondWithJSONEncoded(http.StatusOK, map[string]string{"handle": "the-task-guid"}),
-						func(w http.ResponseWriter, r *http.Request) {
-							body, err := ioutil.ReadAll(r.Body)
-							Expect(err).NotTo(HaveOccurred())
-
-							Expect(string(body)).To(ContainSubstring(`"handle":"the-task-guid"`))
-							Expect(r.Body.Close()).NotTo(HaveOccurred())
-							close(containersCalled)
-						},
-					))
-
-					fakeGarden.RouteToHandler("PUT", "/containers/the-task-guid/limits/memory", ghttp.RespondWithJSONEncoded(http.StatusOK, garden.MemoryLimits{}))
-					fakeGarden.RouteToHandler("PUT", "/containers/the-task-guid/limits/disk", ghttp.RespondWithJSONEncoded(http.StatusOK, garden.DiskLimits{}))
-					fakeGarden.RouteToHandler("PUT", "/containers/the-task-guid/limits/cpu", ghttp.RespondWithJSONEncoded(http.StatusOK, garden.CPULimits{}))
-					fakeGarden.RouteToHandler("POST", "/containers/the-task-guid/net/out", ghttp.RespondWithJSONEncoded(http.StatusOK, garden.CPULimits{}))
-					fakeGarden.RouteToHandler("GET", "/containers/the-task-guid/info", ghttp.RespondWithJSONEncoded(http.StatusOK, garden.ContainerInfo{}))
-
-					taskModel := model_helpers.NewValidTask("the-task-guid")
-					task = rep.NewTask(
-						taskModel.TaskGuid,
-						taskModel.Domain,
-						rep.NewResource(taskModel.MemoryMb, taskModel.DiskMb, taskModel.RootFs),
-					)
-
-					err := bbsClient.DesireTask(taskModel.TaskGuid, taskModel.Domain, taskModel.TaskDefinition)
-					Expect(err).NotTo(HaveOccurred())
-				})
-
-				It("makes a request to executor to allocate the container", func() {
-					Expect(getTasksByState(bbsClient, models.Task_Pending)).To(HaveLen(1))
-					Expect(getTasksByState(bbsClient, models.Task_Running)).To(BeEmpty())
-					works := rep.Work{
-						Tasks: []rep.Task{task},
-					}
-
-					failedWorks, err := client.Perform(works)
-					Expect(err).NotTo(HaveOccurred())
-					Expect(failedWorks.Tasks).To(BeEmpty())
-
-					Eventually(containersCalled).Should(BeClosed())
 				})
 			})
 		})
@@ -400,203 +285,28 @@ var _ = Describe("The Rep", func() {
 			})
 		})
 
-		Describe("when a StopLRPInstance request comes in", func() {
-			const processGuid = "process-guid"
-			const instanceGuid = "some-instance-guid"
-			var runningLRP *models.ActualLRP
-			var containerGuid = rep.LRPContainerGuid(processGuid, instanceGuid)
-			var expectedDestroyRoute = "/containers/" + containerGuid
-
-			JustBeforeEach(func() {
-				fakeGarden.RouteToHandler("DELETE", expectedDestroyRoute,
-					ghttp.RespondWithJSONEncoded(http.StatusOK, &struct{}{}),
-				)
-
-				// ensure the container remains after being stopped
-				fakeGarden.RouteToHandler("GET", "/containers",
-					ghttp.RespondWithJSONEncoded(http.StatusOK, map[string][]string{
-						"handles": []string{containerGuid},
-					}),
-				)
-
-				containerInfo := garden.ContainerInfo{
-					Properties: map[string]string{
-						gardenstore.ContainerStateProperty:    string(executor.StateRunning),
-						gardenstore.ContainerMemoryMBProperty: "512", gardenstore.ContainerDiskMBProperty: "1024"},
-				}
-				fakeGarden.RouteToHandler("GET", "/containers/bulk_info",
-					ghttp.RespondWithJSONEncoded(http.StatusOK,
-						map[string]garden.ContainerInfoEntry{
-							containerGuid: garden.ContainerInfoEntry{Info: containerInfo},
-						},
-					),
-				)
-
-				fakeGarden.RouteToHandler("GET", fmt.Sprintf("/containers/%s/info", containerGuid), ghttp.RespondWithJSONEncoded(http.StatusOK, containerInfo))
-
-				Eventually(fetchCells(logger, serviceClient)).Should(HaveLen(1))
-
-				lrpKey := models.NewActualLRPKey(processGuid, 1, "domain")
-				instanceKey := models.NewActualLRPInstanceKey(instanceGuid, cellID)
-				netInfo := models.NewActualLRPNetInfo("bogus-ip")
-
-				err := bbsClient.StartActualLRP(&lrpKey, &instanceKey, &netInfo)
-				Expect(err).NotTo(HaveOccurred())
-
-				actualLRPGroup, err := bbsClient.ActualLRPGroupByProcessGuidAndIndex(lrpKey.ProcessGuid, int(lrpKey.Index))
-				Expect(err).NotTo(HaveOccurred())
-				runningLRP = actualLRPGroup.GetInstance()
-			})
-
-			It("should destroy the container", func() {
-				Eventually(getActualLRPGroups).Should(HaveLen(1))
-				err := bbsClient.RetireActualLRP(&runningLRP.ActualLRPKey)
-				Expect(err).NotTo(HaveOccurred())
-
-				findDestroyRequest := func() bool {
-					for _, req := range fakeGarden.ReceivedRequests() {
-						if req.URL.Path == expectedDestroyRoute {
-							return true
-						}
-					}
-					return false
-				}
-
-				Eventually(findDestroyRequest).Should(BeTrue())
-			})
-		})
-
-		Describe("cancelling tasks", func() {
-			const taskGuid = "some-task-guid"
-			const expectedDeleteRoute = "/containers/" + taskGuid
-
-			var deletedContainer chan struct{}
-
-			JustBeforeEach(func() {
-				Eventually(fetchCells(logger, serviceClient)).Should(HaveLen(1))
-
-				deletedContainer = make(chan struct{})
-
-				fakeGarden.RouteToHandler("DELETE", expectedDeleteRoute,
-					ghttp.CombineHandlers(
-						func(http.ResponseWriter, *http.Request) {
-							close(deletedContainer)
-						},
-						ghttp.RespondWithJSONEncoded(http.StatusOK, &struct{}{}),
-					),
-				)
-
-				task := model_helpers.NewValidTask(taskGuid)
-
-				err := bbsClient.DesireTask(task.TaskGuid, task.Domain, task.TaskDefinition)
-				Expect(err).NotTo(HaveOccurred())
-
-				started, err := bbsClient.StartTask(taskGuid, cellID)
-				Expect(err).NotTo(HaveOccurred())
-				Expect(started).To(BeTrue())
-			})
-
-			It("deletes the container", func() {
-				err := bbsClient.CancelTask(taskGuid)
-				Expect(err).NotTo(HaveOccurred())
-
-				Eventually(deletedContainer).Should(BeClosed())
-
-				Consistently(func() ([]*models.Task, error) {
-					return bbsClient.Tasks()
-				}).Should(HaveLen(1))
-			})
-		})
-
 		Describe("Evacuation", func() {
-			Context("when it has running LRP containers", func() {
-				var (
-					processGuid  string
-					index        int32
-					domain       string
-					instanceGuid string
-					address      string
+			JustBeforeEach(func() {
+				resp, err := http.Post(fmt.Sprintf("http://127.0.0.1:%d/evacuate", serverPort), "text/html", nil)
+				Expect(err).NotTo(HaveOccurred())
+				resp.Body.Close()
+				Expect(resp.StatusCode).To(Equal(http.StatusAccepted))
+			})
 
-					lrpKey          models.ActualLRPKey
-					lrpContainerKey models.ActualLRPInstanceKey
-					lrpNetInfo      models.ActualLRPNetInfo
-				)
+			Context("when exceeding the evacuation timeout", func() {
+				It("shuts down gracefully", func() {
+					// wait longer than expected to let OS and Go runtime reap process
+					Eventually(runner.Session.ExitCode, 2*evacuationTimeout+2*time.Second).Should(Equal(0))
+				})
+			})
 
+			Context("when signaled to stop", func() {
 				JustBeforeEach(func() {
-					processGuid = "some-process-guid"
-					index = 2
-					domain = "some-domain"
-
-					instanceGuid = "some-instance-guid"
-					address = "some-external-ip"
-
-					containerGuid := rep.LRPContainerGuid(processGuid, instanceGuid)
-
-					containerInfo := garden.ContainerInfo{
-						ExternalIP: "localhost",
-						Properties: map[string]string{
-							gardenstore.ContainerStateProperty:    string(executor.StateRunning),
-							gardenstore.ContainerMemoryMBProperty: "512", gardenstore.ContainerDiskMBProperty: "1024",
-							"tag:" + rep.LifecycleTag:    rep.LRPLifecycle,
-							"tag:" + rep.DomainTag:       "domain",
-							"tag:" + rep.ProcessGuidTag:  processGuid,
-							"tag:" + rep.InstanceGuidTag: instanceGuid,
-							"tag:" + rep.ProcessIndexTag: strconv.Itoa(int(index)),
-						}}
-					fakeGarden.RouteToHandler("GET", "/containers",
-						ghttp.RespondWithJSONEncoded(http.StatusOK, map[string][]string{"handles": []string{containerGuid}}),
-					)
-					fakeGarden.RouteToHandler("GET", "/containers/bulk_info",
-						ghttp.RespondWithJSONEncoded(http.StatusOK,
-							map[string]garden.ContainerInfoEntry{
-								containerGuid: garden.ContainerInfoEntry{Info: containerInfo},
-							},
-						),
-					)
-					fakeGarden.RouteToHandler("DELETE", "/containers/"+containerGuid, ghttp.RespondWithJSONEncoded(http.StatusOK, &struct{}{}))
-
-					fakeGarden.RouteToHandler("GET", "/containers/"+containerGuid+"/info", ghttp.RespondWithJSONEncoded(http.StatusOK, containerInfo))
-
-					lrpKey = models.NewActualLRPKey(processGuid, index, domain)
-					lrpContainerKey = models.NewActualLRPInstanceKey(instanceGuid, cellID)
-					lrpNetInfo = models.NewActualLRPNetInfo(address, models.NewPortMapping(2589, 1470))
-
-					err := bbsClient.StartActualLRP(&lrpKey, &lrpContainerKey, &lrpNetInfo)
-					Expect(err).NotTo(HaveOccurred())
-
-					resp, err := http.Post(fmt.Sprintf("http://127.0.0.1:%d/evacuate", serverPort), "text/html", nil)
-					Expect(err).NotTo(HaveOccurred())
-					resp.Body.Close()
-					Expect(resp.StatusCode).To(Equal(http.StatusAccepted))
+					runner.Stop()
 				})
 
-				It("evacuates them", func() {
-					getEvacuatingLRP := func() *models.ActualLRP {
-						actualLRPGroup, err := bbsClient.ActualLRPGroupByProcessGuidAndIndex(processGuid, int(index))
-						Expect(err).NotTo(HaveOccurred())
-
-						return actualLRPGroup.Evacuating
-					}
-
-					Eventually(getEvacuatingLRP, 1).ShouldNot(BeNil())
-					Expect(getEvacuatingLRP().ProcessGuid).To(Equal(processGuid))
-				})
-
-				Context("when exceeding the evacuation timeout", func() {
-					It("shuts down gracefully", func() {
-						// wait longer than expected to let OS and Go runtime reap process
-						Eventually(runner.Session.ExitCode, 2*evacuationTimeout+2*time.Second).Should(Equal(0))
-					})
-				})
-
-				Context("when signaled to stop", func() {
-					JustBeforeEach(func() {
-						runner.Stop()
-					})
-
-					It("shuts down gracefully", func() {
-						Eventually(runner.Session.ExitCode).Should(Equal(0))
-					})
+				It("shuts down gracefully", func() {
+					Eventually(runner.Session.ExitCode).Should(Equal(0))
 				})
 			})
 		})
@@ -647,8 +357,8 @@ func getTasksByState(client bbs.Client, state models.Task_State) []*models.Task 
 	return filteredTasks
 }
 
-func fetchCells(logger lager.Logger, serviceClient bbs.ServiceClient) func() (models.CellSet, error) {
-	return func() (models.CellSet, error) {
-		return serviceClient.Cells(logger)
+func fetchCells(logger lager.Logger) func() ([]*models.CellPresence, error) {
+	return func() ([]*models.CellPresence, error) {
+		return bbsClient.Cells()
 	}
 }

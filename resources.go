@@ -13,16 +13,28 @@ var ErrorIncompatibleRootfs = errors.New("rootfs not found")
 var ErrorInsufficientResources = errors.New("insufficient resources")
 
 type CellState struct {
-	RootFSProviders    RootFSProviders
-	AvailableResources Resources
-	TotalResources     Resources
-	LRPs               []LRP
-	Tasks              []Task
-	Zone               string
-	Evacuating         bool
+	RootFSProviders        RootFSProviders
+	AvailableResources     Resources
+	TotalResources         Resources
+	LRPs                   []LRP
+	Tasks                  []Task
+	StartingContainerCount int
+	Zone                   string
+	Evacuating             bool
+	VolumeDrivers          []string
 }
 
-func NewCellState(root RootFSProviders, avail Resources, total Resources, lrps []LRP, tasks []Task, zone string, isEvac bool) CellState {
+func NewCellState(
+	root RootFSProviders,
+	avail Resources,
+	total Resources,
+	lrps []LRP,
+	tasks []Task,
+	zone string,
+	startingContainerCount int,
+	isEvac bool,
+	volumeDrivers []string,
+) CellState {
 	return CellState{
 		RootFSProviders:    root,
 		AvailableResources: avail,
@@ -30,25 +42,21 @@ func NewCellState(root RootFSProviders, avail Resources, total Resources, lrps [
 		LRPs:               lrps,
 		Tasks:              tasks,
 		Zone:               zone,
-		Evacuating:         isEvac,
+		StartingContainerCount: startingContainerCount,
+		Evacuating:             isEvac,
+		VolumeDrivers:          volumeDrivers,
 	}
-}
-
-func (c *CellState) Copy() CellState {
-	lrps := make([]LRP, 0, len(c.LRPs))
-	copy(lrps, c.LRPs)
-	tasks := make([]Task, 0, len(c.Tasks))
-	copy(tasks, c.Tasks)
-	return NewCellState(c.RootFSProviders.Copy(), c.AvailableResources, c.TotalResources, lrps, tasks, c.Zone, c.Evacuating)
 }
 
 func (c *CellState) AddLRP(lrp *LRP) {
 	c.AvailableResources.Subtract(&lrp.Resource)
+	c.StartingContainerCount += 1
 	c.LRPs = append(c.LRPs, *lrp)
 }
 
 func (c *CellState) AddTask(task *Task) {
 	c.AvailableResources.Subtract(&task.Resource)
+	c.StartingContainerCount += 1
 	c.Tasks = append(c.Tasks, *task)
 }
 
@@ -67,10 +75,11 @@ func (c *CellState) ResourceMatch(res *Resource) error {
 	}
 }
 
-func (c CellState) ComputeScore(res *Resource) float64 {
+func (c CellState) ComputeScore(res *Resource, startingContainerWeight float64) float64 {
 	remainingResources := c.AvailableResources.Copy()
 	remainingResources.Subtract(res)
-	return remainingResources.ComputeScore(&c.TotalResources)
+	startingContainerScore := float64(c.StartingContainerCount) * startingContainerWeight
+	return remainingResources.ComputeScore(&c.TotalResources) + startingContainerScore
 }
 
 func (c *CellState) MatchRootFS(rootfs string) bool {
@@ -80,6 +89,25 @@ func (c *CellState) MatchRootFS(rootfs string) bool {
 	}
 
 	return c.RootFSProviders.Match(*rootFSURL)
+}
+
+func (c *CellState) MatchVolumeDrivers(volumeDrivers []string) bool {
+	for _, requestedDriver := range volumeDrivers {
+		found := false
+
+		for _, actualDriver := range c.VolumeDrivers {
+			if requestedDriver == actualDriver {
+				found = true
+				break
+			}
+		}
+
+		if !found {
+			return false
+		}
+	}
+
+	return true
 }
 
 type Resources struct {
@@ -110,13 +138,14 @@ func (r *Resources) ComputeScore(total *Resources) float64 {
 }
 
 type Resource struct {
-	MemoryMB int32
-	DiskMB   int32
-	RootFs   string
+	MemoryMB      int32
+	DiskMB        int32
+	RootFs        string
+	VolumeDrivers []string
 }
 
-func NewResource(memoryMb, diskMb int32, rootfs string) Resource {
-	return Resource{memoryMb, diskMb, rootfs}
+func NewResource(memoryMb, diskMb int32, rootfs string, volumeDrivers []string) Resource {
+	return Resource{MemoryMB: memoryMb, DiskMB: diskMb, RootFs: rootfs, VolumeDrivers: volumeDrivers}
 }
 
 func (r *Resource) Empty() bool {
@@ -124,7 +153,7 @@ func (r *Resource) Empty() bool {
 }
 
 func (r *Resource) Copy() Resource {
-	return NewResource(r.MemoryMB, r.DiskMB, r.RootFs)
+	return NewResource(r.MemoryMB, r.DiskMB, r.RootFs, r.VolumeDrivers)
 }
 
 type LRP struct {

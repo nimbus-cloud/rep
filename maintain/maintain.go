@@ -16,8 +16,9 @@ import (
 type Maintainer struct {
 	Config
 	executorClient executor.Client
-	serviceClient         bbs.ServiceClient
+	serviceClient  bbs.ServiceClient
 	logger         lager.Logger
+	lockTTL        time.Duration
 	clock          clock.Clock
 }
 
@@ -31,17 +32,19 @@ type Config struct {
 }
 
 func New(
+	logger lager.Logger,
 	config Config,
 	executorClient executor.Client,
 	serviceClient bbs.ServiceClient,
-	logger lager.Logger,
+	lockTTL time.Duration,
 	clock clock.Clock,
 ) *Maintainer {
 	return &Maintainer{
 		Config:         config,
 		executorClient: executorClient,
-		serviceClient:         serviceClient,
+		serviceClient:  serviceClient,
 		logger:         logger.Session("maintainer"),
+		lockTTL:        lockTTL,
 		clock:          clock,
 	}
 }
@@ -77,7 +80,7 @@ func (m *Maintainer) waitForExecutor(sigChan <-chan os.Signal) (ifrit.Runner, er
 	sleeper := m.clock.NewTimer(ExecutorPollInterval)
 	for {
 		m.logger.Debug("waiting-pinging-executor")
-		err := m.executorClient.Ping()
+		err := m.executorClient.Ping(m.logger)
 		if err == nil {
 			return m.createHeartbeater()
 		}
@@ -95,14 +98,14 @@ func (m *Maintainer) waitForExecutor(sigChan <-chan os.Signal) (ifrit.Runner, er
 }
 
 func (m *Maintainer) createHeartbeater() (ifrit.Runner, error) {
-	resources, err := m.executorClient.TotalResources()
+	resources, err := m.executorClient.TotalResources(m.logger)
 	if err != nil {
 		return nil, err
 	}
 
-	cellCapacity := models.NewCellCapacity(resources.MemoryMB, resources.DiskMB, resources.Containers)
+	cellCapacity := models.NewCellCapacity(int32(resources.MemoryMB), int32(resources.DiskMB), int32(resources.Containers))
 	cellPresence := models.NewCellPresence(m.CellID, m.RepAddress, m.Zone, cellCapacity, m.RootFSProviders, m.PreloadedRootFSes)
-	return m.serviceClient.NewCellPresenceRunner(m.logger, &cellPresence, m.RetryInterval), nil
+	return m.serviceClient.NewCellPresenceRunner(m.logger, &cellPresence, m.RetryInterval, m.lockTTL), nil
 }
 
 func (m *Maintainer) heartbeat(sigChan <-chan os.Signal, ready chan<- struct{}, heartbeater ifrit.Runner) error {
@@ -146,7 +149,7 @@ func (m *Maintainer) heartbeat(sigChan <-chan os.Signal, ready chan<- struct{}, 
 
 		case <-ticker.C():
 			m.logger.Debug("heartbeat-pinging-executor")
-			err := m.executorClient.Ping()
+			err := m.executorClient.Ping(m.logger)
 			if err == nil {
 				continue
 			}

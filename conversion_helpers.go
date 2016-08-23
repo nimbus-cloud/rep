@@ -1,6 +1,7 @@
 package rep
 
 import (
+	"encoding/json"
 	"errors"
 	"net/url"
 	"strconv"
@@ -100,6 +101,11 @@ func NewRunRequestFromDesiredLRP(
 		return executor.RunRequest{}, err
 	}
 
+	mounts, err := convertVolumeMounts(desiredLRP.VolumeMounts)
+	if err != nil {
+		return executor.RunRequest{}, err
+	}
+
 	runInfo := executor.RunInfo{
 		CPUWeight: uint(desiredLRP.CpuWeight),
 		DiskScope: diskScope,
@@ -114,18 +120,21 @@ func NewRunRequestFromDesiredLRP(
 			Guid:  desiredLRP.MetricsGuid,
 			Index: int(lrpKey.Index),
 		},
-		StartTimeout: uint(desiredLRP.StartTimeout),
-		Privileged:   desiredLRP.Privileged,
-		Setup:        desiredLRP.Setup,
-		Action:       desiredLRP.Action,
-		Monitor:      desiredLRP.Monitor,
-		EgressRules:  desiredLRP.EgressRules,
+		StartTimeout:       uint(desiredLRP.StartTimeout),
+		Privileged:         desiredLRP.Privileged,
+		CachedDependencies: ConvertCachedDependencies(desiredLRP.CachedDependencies),
+		Setup:              desiredLRP.Setup,
+		Action:             desiredLRP.Action,
+		Monitor:            desiredLRP.Monitor,
+		EgressRules:        desiredLRP.EgressRules,
 		Env: append([]executor.EnvironmentVariable{
 			{Name: "INSTANCE_GUID", Value: lrpInstanceKey.InstanceGuid},
 			{Name: "INSTANCE_INDEX", Value: strconv.Itoa(int(lrpKey.Index))},
 			{Name: "CF_INSTANCE_GUID", Value: lrpInstanceKey.InstanceGuid},
 			{Name: "CF_INSTANCE_INDEX", Value: strconv.Itoa(int(lrpKey.Index))},
 		}, executor.EnvironmentVariablesFromModel(desiredLRP.EnvironmentVariables)...),
+		TrustedSystemCertificatesPath: desiredLRP.TrustedSystemCertificatesPath,
+		VolumeMounts:                  mounts,
 	}
 	tags := executor.Tags{}
 	return executor.NewRunRequest(containerGuid, &runInfo, tags), nil
@@ -137,6 +146,11 @@ func NewRunRequestFromTask(task *models.Task) (executor.RunRequest, error) {
 		return executor.RunRequest{}, err
 	}
 
+	mounts, err := convertVolumeMounts(task.VolumeMounts)
+	if err != nil {
+		return executor.RunRequest{}, err
+	}
+
 	tags := executor.Tags{
 		ResultFileTag: task.ResultFile,
 	}
@@ -144,7 +158,6 @@ func NewRunRequestFromTask(task *models.Task) (executor.RunRequest, error) {
 		DiskScope:  diskScope,
 		CPUWeight:  uint(task.CpuWeight),
 		Privileged: task.Privileged,
-
 		LogConfig: executor.LogConfig{
 			Guid:       task.LogGuid,
 			SourceName: task.LogSource,
@@ -152,11 +165,62 @@ func NewRunRequestFromTask(task *models.Task) (executor.RunRequest, error) {
 		MetricsConfig: executor.MetricsConfig{
 			Guid: task.MetricsGuid,
 		},
-		Action:      task.Action,
-		Env:         executor.EnvironmentVariablesFromModel(task.EnvironmentVariables),
-		EgressRules: task.EgressRules,
+		CachedDependencies:            ConvertCachedDependencies(task.CachedDependencies),
+		Action:                        task.Action,
+		Env:                           executor.EnvironmentVariablesFromModel(task.EnvironmentVariables),
+		EgressRules:                   task.EgressRules,
+		TrustedSystemCertificatesPath: task.TrustedSystemCertificatesPath,
+		VolumeMounts:                  mounts,
 	}
 	return executor.NewRunRequest(task.TaskGuid, &runInfo, tags), nil
+}
+
+func ConvertCachedDependencies(modelDeps []*models.CachedDependency) []executor.CachedDependency {
+	execDeps := make([]executor.CachedDependency, len(modelDeps))
+	for i := range modelDeps {
+		execDeps[i] = ConvertCachedDependency(modelDeps[i])
+	}
+	return execDeps
+}
+
+func ConvertCachedDependency(modelDep *models.CachedDependency) executor.CachedDependency {
+	return executor.CachedDependency{
+		Name:      modelDep.Name,
+		From:      modelDep.From,
+		To:        modelDep.To,
+		CacheKey:  modelDep.CacheKey,
+		LogSource: modelDep.LogSource,
+	}
+}
+
+func convertVolumeMounts(volumeMounts []*models.VolumeMount) ([]executor.VolumeMount, error) {
+	execMnts := make([]executor.VolumeMount, len(volumeMounts))
+	for i := range volumeMounts {
+		var err error
+		execMnts[i], err = convertVolumeMount(volumeMounts[i])
+		if err != nil {
+			return nil, err
+		}
+	}
+	return execMnts, nil
+}
+
+func convertVolumeMount(volumeMnt *models.VolumeMount) (executor.VolumeMount, error) {
+	var config map[string]interface{}
+	if len(volumeMnt.Config) > 0 {
+		err := json.Unmarshal(volumeMnt.Config, &config)
+		if err != nil {
+			return executor.VolumeMount{}, err
+		}
+	}
+
+	return executor.VolumeMount{
+		Driver:        volumeMnt.Driver,
+		VolumeId:      volumeMnt.VolumeId,
+		ContainerPath: volumeMnt.ContainerPath,
+		Mode:          executor.BindMountMode(volumeMnt.Mode),
+		Config:        config,
+	}, nil
 }
 
 func ConvertPortMappings(containerPorts []uint32) []executor.PortMapping {

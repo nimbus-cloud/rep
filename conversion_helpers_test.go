@@ -287,24 +287,39 @@ var _ = Describe("Resources", func() {
 					Index:      int(actualLRP.Index),
 					SourceName: desiredLRP.LogSource,
 				},
-
 				MetricsConfig: executor.MetricsConfig{
 					Guid:  desiredLRP.MetricsGuid,
 					Index: int(actualLRP.Index),
 				},
 				StartTimeout: uint(desiredLRP.StartTimeout),
 				Privileged:   desiredLRP.Privileged,
-				Setup:        desiredLRP.Setup,
-				Action:       desiredLRP.Action,
-				Monitor:      desiredLRP.Monitor,
-				EgressRules:  desiredLRP.EgressRules,
+				CachedDependencies: []executor.CachedDependency{
+					{Name: "app bits", From: "blobstore.com/bits/app-bits", To: "/usr/local/app", CacheKey: "cache-key", LogSource: "log-source"},
+				},
+				Setup:       desiredLRP.Setup,
+				Action:      desiredLRP.Action,
+				Monitor:     desiredLRP.Monitor,
+				EgressRules: desiredLRP.EgressRules,
 				Env: append([]executor.EnvironmentVariable{
 					{Name: "INSTANCE_GUID", Value: actualLRP.InstanceGuid},
 					{Name: "INSTANCE_INDEX", Value: strconv.Itoa(int(actualLRP.Index))},
 					{Name: "CF_INSTANCE_GUID", Value: actualLRP.InstanceGuid},
 					{Name: "CF_INSTANCE_INDEX", Value: strconv.Itoa(int(actualLRP.Index))},
 				}, executor.EnvironmentVariablesFromModel(desiredLRP.EnvironmentVariables)...),
+				TrustedSystemCertificatesPath: "/etc/somepath",
+				VolumeMounts:                  []executor.VolumeMount{{Driver: "my-driver", VolumeId: "my-volume", ContainerPath: "/mnt/mypath", Mode: executor.BindMountModeRO}},
 			}))
+		})
+
+		Context("when a volumeMount config is invalid", func() {
+			BeforeEach(func() {
+				desiredLRP.VolumeMounts[0].Config = []byte("{{")
+			})
+
+			It("returns an error", func() {
+				_, err := rep.NewRunRequestFromDesiredLRP(containerGuid, desiredLRP, &actualLRP.ActualLRPKey, &actualLRP.ActualLRPInstanceKey)
+				Expect(err).To(HaveOccurred())
+			})
 		})
 
 		Context("when the rootfs is not preloaded", func() {
@@ -338,7 +353,9 @@ var _ = Describe("Resources", func() {
 				DiskScope:  executor.ExclusiveDiskLimit,
 				CPUWeight:  uint(task.CpuWeight),
 				Privileged: task.Privileged,
-
+				CachedDependencies: []executor.CachedDependency{
+					{Name: "app bits", From: "blobstore.com/bits/app-bits", To: "/usr/local/app", CacheKey: "cache-key", LogSource: "log-source"},
+				},
 				LogConfig: executor.LogConfig{
 					Guid:       task.LogGuid,
 					SourceName: task.LogSource,
@@ -346,9 +363,11 @@ var _ = Describe("Resources", func() {
 				MetricsConfig: executor.MetricsConfig{
 					Guid: task.MetricsGuid,
 				},
-				Action:      task.Action,
-				Env:         executor.EnvironmentVariablesFromModel(task.EnvironmentVariables),
-				EgressRules: task.EgressRules,
+				Action:                        task.Action,
+				Env:                           executor.EnvironmentVariablesFromModel(task.EnvironmentVariables),
+				EgressRules:                   task.EgressRules,
+				TrustedSystemCertificatesPath: "/etc/somepath",
+				VolumeMounts:                  []executor.VolumeMount{{Driver: "my-driver", VolumeId: "my-volume", ContainerPath: "/mnt/mypath", Mode: executor.BindMountModeRO}},
 			}))
 		})
 
@@ -361,6 +380,17 @@ var _ = Describe("Resources", func() {
 				runReq, err := rep.NewRunRequestFromTask(task)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(runReq.DiskScope).To(Equal(executor.TotalDiskLimit))
+			})
+		})
+
+		Context("when a volumeMount config is invalid", func() {
+			BeforeEach(func() {
+				task.VolumeMounts[0].Config = []byte("{{")
+			})
+
+			It("returns an error", func() {
+				_, err := rep.NewRunRequestFromTask(task)
+				Expect(err).To(MatchError("invalid character '{' looking for beginning of object key string"))
 			})
 		})
 	})
