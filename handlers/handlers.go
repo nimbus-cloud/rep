@@ -1,10 +1,12 @@
 package handlers
 
 import (
-	"github.com/cloudfoundry-incubator/executor"
-	"github.com/cloudfoundry-incubator/rep"
-	"github.com/cloudfoundry-incubator/rep/evacuation/evacuation_context"
-	"github.com/pivotal-golang/lager"
+	"net/http"
+
+	"code.cloudfoundry.org/executor"
+	"code.cloudfoundry.org/lager"
+	"code.cloudfoundry.org/rep"
+	"code.cloudfoundry.org/rep/evacuation/evacuation_context"
 	"github.com/tedsuo/rata"
 )
 
@@ -14,17 +16,39 @@ func New(
 	evacuatable evacuation_context.Evacuatable,
 	logger lager.Logger,
 ) rata.Handlers {
+	stateHandler := &state{rep: localCellClient}
+	performHandler := &perform{rep: localCellClient}
+	resetHandler := &reset{rep: localCellClient}
+	stopLrpHandler := NewStopLRPInstanceHandler(executorClient)
+	cancelTaskHandler := NewCancelTaskHandler(executorClient)
+	pingHandler := NewPingHandler()
+	evacuationHandler := NewEvacuationHandler(evacuatable)
+
 	handlers := rata.Handlers{
-		rep.StateRoute:     &state{rep: localCellClient, logger: logger},
-		rep.PerformRoute:   &perform{rep: localCellClient, logger: logger},
-		rep.Sim_ResetRoute: &reset{rep: localCellClient, logger: logger},
+		rep.StateRoute:     logWrap(stateHandler.ServeHTTP, logger),
+		rep.PerformRoute:   logWrap(performHandler.ServeHTTP, logger),
+		rep.Sim_ResetRoute: logWrap(resetHandler.ServeHTTP, logger),
 
-		rep.StopLRPInstanceRoute: NewStopLRPInstanceHandler(logger, executorClient),
-		rep.CancelTaskRoute:      NewCancelTaskHandler(logger, executorClient),
+		rep.StopLRPInstanceRoute: logWrap(stopLrpHandler.ServeHTTP, logger),
+		rep.CancelTaskRoute:      logWrap(cancelTaskHandler.ServeHTTP, logger),
 
-		rep.PingRoute:     NewPingHandler(),
-		rep.EvacuateRoute: NewEvacuationHandler(logger, evacuatable),
+		rep.PingRoute:     logWrap(pingHandler.ServeHTTP, logger),
+		rep.EvacuateRoute: logWrap(evacuationHandler.ServeHTTP, logger),
 	}
 
 	return handlers
+}
+
+func logWrap(loggable func(http.ResponseWriter, *http.Request, lager.Logger), logger lager.Logger) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		requestLog := logger.Session("request", lager.Data{
+			"method":  r.Method,
+			"request": r.URL.String(),
+		})
+
+		defer requestLog.Debug("done")
+		requestLog.Debug("serving")
+
+		loggable(w, r, requestLog)
+	}
 }

@@ -4,15 +4,15 @@ import (
 	"errors"
 	"os"
 
-	"github.com/cloudfoundry-incubator/bbs/fake_bbs"
-	"github.com/cloudfoundry-incubator/bbs/models"
-	"github.com/cloudfoundry-incubator/bbs/models/test/model_helpers"
-	"github.com/cloudfoundry-incubator/rep/evacuation"
+	"code.cloudfoundry.org/bbs/fake_bbs"
+	"code.cloudfoundry.org/bbs/models"
+	"code.cloudfoundry.org/bbs/models/test/model_helpers"
+	"code.cloudfoundry.org/lager/lagertest"
+	"code.cloudfoundry.org/rep/evacuation"
 	fake_metrics_sender "github.com/cloudfoundry/dropsonde/metric_sender/fake"
 	"github.com/cloudfoundry/dropsonde/metrics"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
-	"github.com/pivotal-golang/lager/lagertest"
 	"github.com/tedsuo/ifrit"
 	"github.com/tedsuo/ifrit/ginkgomon"
 )
@@ -22,7 +22,7 @@ var _ = Describe("EvacuationCleanup", func() {
 		logger *lagertest.TestLogger
 		cellID string
 
-		fakeBBSClient     *fake_bbs.FakeClient
+		fakeBBSClient     *fake_bbs.FakeInternalClient
 		fakeMetricsSender *fake_metrics_sender.FakeMetricSender
 
 		cleanup        *evacuation.EvacuationCleanup
@@ -36,7 +36,7 @@ var _ = Describe("EvacuationCleanup", func() {
 		cellID = "the-cell-id"
 		logger = lagertest.NewTestLogger("cleanup")
 
-		fakeBBSClient = &fake_bbs.FakeClient{}
+		fakeBBSClient = &fake_bbs.FakeInternalClient{}
 		fakeMetricsSender = fake_metrics_sender.NewFakeMetricSender()
 		metrics.Initialize(fakeMetricsSender, nil)
 
@@ -97,23 +97,23 @@ var _ = Describe("EvacuationCleanup", func() {
 		It("removes all evacuating actual lrps associated with the cell", func() {
 			Eventually(errCh).Should(Receive(nil))
 			Expect(fakeBBSClient.ActualLRPGroupsCallCount()).To(Equal(1))
-			filter := fakeBBSClient.ActualLRPGroupsArgsForCall(0)
+			_, filter := fakeBBSClient.ActualLRPGroupsArgsForCall(0)
 			Expect(filter).To(Equal(models.ActualLRPFilter{CellID: cellID}))
 
 			Expect(fakeBBSClient.RemoveEvacuatingActualLRPCallCount()).To(Equal(2))
 
-			lrpKey, lrpInstanceKey := fakeBBSClient.RemoveEvacuatingActualLRPArgsForCall(0)
+			_, lrpKey, lrpInstanceKey := fakeBBSClient.RemoveEvacuatingActualLRPArgsForCall(0)
 			Expect(*lrpKey).To(Equal(evacuatingActualLRPGroup.Evacuating.ActualLRPKey))
 			Expect(*lrpInstanceKey).To(Equal(evacuatingActualLRPGroup.Evacuating.ActualLRPInstanceKey))
 
-			lrpKey, lrpInstanceKey = fakeBBSClient.RemoveEvacuatingActualLRPArgsForCall(1)
+			_, lrpKey, lrpInstanceKey = fakeBBSClient.RemoveEvacuatingActualLRPArgsForCall(1)
 			Expect(*lrpKey).To(Equal(actualLRPGroup.Evacuating.ActualLRPKey))
 			Expect(*lrpInstanceKey).To(Equal(actualLRPGroup.Evacuating.ActualLRPInstanceKey))
 		})
 
-		It("emits a metrics for all stranded evacuating actual lrps", func() {
+		It("emits a metric for the number of stranded evacuating actual lrps", func() {
 			Eventually(errCh).Should(Receive(nil))
-			Expect(fakeMetricsSender.GetValue("StrandedEvacuatedActualLRPs").Value).To(BeEquivalentTo(2))
+			Expect(fakeMetricsSender.GetValue("StrandedEvacuatingActualLRPs").Value).To(BeEquivalentTo(2))
 		})
 
 		Describe("when fetching the actual lrp groups fails", func() {

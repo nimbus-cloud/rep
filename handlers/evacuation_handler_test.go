@@ -5,9 +5,9 @@ import (
 	"net/http"
 	"net/http/httptest"
 
-	"github.com/cloudfoundry-incubator/rep/evacuation/evacuation_context/fake_evacuation_context"
-	"github.com/cloudfoundry-incubator/rep/handlers"
-	"github.com/pivotal-golang/lager/lagertest"
+	"code.cloudfoundry.org/lager/lagertest"
+	"code.cloudfoundry.org/rep/evacuation/evacuation_context/fake_evacuation_context"
+	"code.cloudfoundry.org/rep/handlers"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -27,7 +27,7 @@ var _ = Describe("EvacuationHandler", func() {
 		BeforeEach(func() {
 			logger = lagertest.NewTestLogger("test")
 			fakeEvacuatable = new(fake_evacuation_context.FakeEvacuatable)
-			handler = handlers.NewEvacuationHandler(logger, fakeEvacuatable)
+			handler = handlers.NewEvacuationHandler(fakeEvacuatable)
 		})
 
 		Context("when receiving a request", func() {
@@ -38,7 +38,7 @@ var _ = Describe("EvacuationHandler", func() {
 				request, err = http.NewRequest("POST", "/evacuate", nil)
 				Expect(err).NotTo(HaveOccurred())
 
-				handler.ServeHTTP(responseRecorder, request)
+				handler.ServeHTTP(responseRecorder, request, logger)
 			})
 
 			It("starts evacuation", func() {

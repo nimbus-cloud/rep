@@ -5,8 +5,8 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/cloudfoundry-incubator/executor"
-	"github.com/pivotal-golang/lager"
+	"code.cloudfoundry.org/executor"
+	"code.cloudfoundry.org/lager"
 )
 
 const MAX_RESULT_SIZE = 1024 * 10
@@ -36,13 +36,13 @@ func NewContainerDelegate(client executor.Client) ContainerDelegate {
 }
 
 func (d *containerDelegate) GetContainer(logger lager.Logger, guid string) (executor.Container, bool) {
-	logger.Info("fetch-container")
+	logger.Debug("fetch-container")
 	container, err := d.client.GetContainer(logger, guid)
 	if err != nil {
 		logInfoOrError(logger, "failed-fetch-container", err)
 		return container, false
 	}
-	logger.Info("succeeded-fetch-container")
+	logger.Debug("succeeded-fetch-container")
 	return container, true
 }
 

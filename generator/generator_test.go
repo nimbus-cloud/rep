@@ -3,13 +3,13 @@ package generator_test
 import (
 	"errors"
 
-	"github.com/cloudfoundry-incubator/bbs/models"
-	"github.com/cloudfoundry-incubator/executor"
-	efakes "github.com/cloudfoundry-incubator/executor/fakes"
-	"github.com/cloudfoundry-incubator/rep"
-	"github.com/cloudfoundry-incubator/rep/evacuation/evacuation_context/fake_evacuation_context"
-	"github.com/cloudfoundry-incubator/rep/generator"
-	"github.com/pivotal-golang/operationq"
+	"code.cloudfoundry.org/bbs/models"
+	"code.cloudfoundry.org/executor"
+	efakes "code.cloudfoundry.org/executor/fakes"
+	"code.cloudfoundry.org/operationq"
+	"code.cloudfoundry.org/rep"
+	"code.cloudfoundry.org/rep/evacuation/evacuation_context/fake_evacuation_context"
+	"code.cloudfoundry.org/rep/generator"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -55,13 +55,13 @@ var _ = Describe("Generator", func() {
 
 		It("retrieves all actual lrps for its cell id", func() {
 			Expect(fakeBBS.ActualLRPGroupsCallCount()).To(Equal(1))
-			actualFilter := fakeBBS.ActualLRPGroupsArgsForCall(0)
+			_, actualFilter := fakeBBS.ActualLRPGroupsArgsForCall(0)
 			Expect(actualFilter.CellID).To(Equal(cellID))
 		})
 
 		It("retrieves all tasks for its cell id", func() {
 			Expect(fakeBBS.TasksByCellIDCallCount()).To(Equal(1))
-			actualCellID := fakeBBS.TasksByCellIDArgsForCall(0)
+			_, actualCellID := fakeBBS.TasksByCellIDArgsForCall(0)
 			Expect(actualCellID).To(Equal(cellID))
 		})
 

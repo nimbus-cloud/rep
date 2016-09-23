@@ -3,15 +3,15 @@ package internal_test
 import (
 	"errors"
 
-	etcddb "github.com/cloudfoundry-incubator/bbs/db/etcd"
-	"github.com/cloudfoundry-incubator/bbs/models"
-	"github.com/cloudfoundry-incubator/bbs/models/test/model_helpers"
-	"github.com/cloudfoundry-incubator/executor"
-	"github.com/cloudfoundry-incubator/rep"
-	"github.com/cloudfoundry-incubator/rep/generator/internal"
-	"github.com/cloudfoundry-incubator/rep/generator/internal/fake_internal"
-	"github.com/pivotal-golang/lager"
-	"github.com/pivotal-golang/lager/lagertest"
+	etcddb "code.cloudfoundry.org/bbs/db/etcd"
+	"code.cloudfoundry.org/bbs/models"
+	"code.cloudfoundry.org/bbs/models/test/model_helpers"
+	"code.cloudfoundry.org/executor"
+	"code.cloudfoundry.org/lager"
+	"code.cloudfoundry.org/lager/lagertest"
+	"code.cloudfoundry.org/rep"
+	"code.cloudfoundry.org/rep/generator/internal"
+	"code.cloudfoundry.org/rep/generator/internal/fake_internal"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -50,7 +50,7 @@ var _ = Describe("Task <-> Container table", func() {
 	itCompletesTheTaskWithFailure := func(reason string) func(*lagertest.TestLogger) {
 		return func(logger *lagertest.TestLogger) {
 			It("completes the task with failure", func() {
-				task, err := bbsClient.TaskByGuid(taskGuid)
+				task, err := bbsClient.TaskByGuid(logger, taskGuid)
 				Expect(err).NotTo(HaveOccurred())
 
 				Expect(task.State).To(Equal(models.Task_Completed))
@@ -70,7 +70,7 @@ var _ = Describe("Task <-> Container table", func() {
 				containerDelegate.FetchContainerResultFileReturns("some-result", nil)
 
 				containerDelegate.DeleteContainerStub = func(logger lager.Logger, guid string) bool {
-					task, err := bbsClient.TaskByGuid(taskGuid)
+					task, err := bbsClient.TaskByGuid(logger, taskGuid)
 					Expect(err).NotTo(HaveOccurred())
 
 					Expect(task.State).To(Equal(models.Task_Completed))
@@ -80,7 +80,7 @@ var _ = Describe("Task <-> Container table", func() {
 			})
 
 			It("completes the task with the result", func() {
-				task, err := bbsClient.TaskByGuid(taskGuid)
+				task, err := bbsClient.TaskByGuid(logger, taskGuid)
 				Expect(err).NotTo(HaveOccurred())
 
 				Expect(task.Failed).To(BeFalse())
@@ -124,7 +124,7 @@ var _ = Describe("Task <-> Container table", func() {
 
 	itSetsTheTaskToRunning := func(logger *lagertest.TestLogger) {
 		It("transitions the task to the running state", func() {
-			task, err := bbsClient.TaskByGuid(taskGuid)
+			task, err := bbsClient.TaskByGuid(logger, taskGuid)
 			Expect(err).NotTo(HaveOccurred())
 
 			Expect(task.State).To(Equal(models.Task_Running))
@@ -137,7 +137,7 @@ var _ = Describe("Task <-> Container table", func() {
 		It("runs the container", func() {
 			Expect(containerDelegate.RunContainerCallCount()).To(Equal(1))
 
-			task, err := bbsClient.TaskByGuid(taskGuid)
+			task, err := bbsClient.TaskByGuid(logger, taskGuid)
 			Expect(err).NotTo(HaveOccurred())
 
 			expectedRunRequest, err := rep.NewRunRequestFromTask(task)
@@ -516,23 +516,23 @@ func walkToState(logger lager.Logger, task *models.Task) {
 func advanceState(logger lager.Logger, task *models.Task, currentState models.Task_State) models.Task_State {
 	switch currentState {
 	case models.Task_Invalid:
-		err := bbsClient.DesireTask(task.TaskGuid, task.Domain, task.TaskDefinition)
+		err := bbsClient.DesireTask(logger, task.TaskGuid, task.Domain, task.TaskDefinition)
 		Expect(err).NotTo(HaveOccurred())
 		return models.Task_Pending
 
 	case models.Task_Pending:
-		changed, err := bbsClient.StartTask(task.TaskGuid, task.CellId)
+		changed, err := bbsClient.StartTask(logger, task.TaskGuid, task.CellId)
 		Expect(err).NotTo(HaveOccurred())
 		Expect(changed).To(BeTrue())
 		return models.Task_Running
 
 	case models.Task_Running:
-		err := bbsClient.CompleteTask(task.TaskGuid, task.CellId, true, "reason", "result")
+		err := bbsClient.CompleteTask(logger, task.TaskGuid, task.CellId, true, "reason", "result")
 		Expect(err).NotTo(HaveOccurred())
 		return models.Task_Completed
 
 	case models.Task_Completed:
-		err := bbsClient.ResolvingTask(task.TaskGuid)
+		err := bbsClient.ResolvingTask(logger, task.TaskGuid)
 		Expect(err).NotTo(HaveOccurred())
 		return models.Task_Resolving
 

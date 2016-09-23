@@ -3,10 +3,10 @@ package harmonizer
 import (
 	"os"
 
-	"github.com/cloudfoundry-incubator/executor"
-	"github.com/cloudfoundry-incubator/rep/generator"
-	"github.com/pivotal-golang/lager"
-	"github.com/pivotal-golang/operationq"
+	"code.cloudfoundry.org/executor"
+	"code.cloudfoundry.org/lager"
+	"code.cloudfoundry.org/operationq"
+	"code.cloudfoundry.org/rep/generator"
 )
 
 type EventConsumer struct {
@@ -33,13 +33,11 @@ func (consumer *EventConsumer) Run(signals <-chan os.Signal, ready chan<- struct
 	logger.Info("starting")
 	defer logger.Info("finished")
 
-	logger.Info("subscribing-to-operation-stream")
-	stream, err := consumer.generator.OperationStream(logger)
+	stream, err := consumer.generator.OperationStream(consumer.logger)
 	if err != nil {
 		logger.Error("failed-subscribing-to-operation-stream", err)
 		return err
 	}
-	logger.Info("succeeded-subscribing-to-operation-stream")
 
 	close(ready)
 	logger.Info("started")

@@ -4,10 +4,10 @@ import (
 	"os"
 	"time"
 
-	"github.com/cloudfoundry-incubator/executor"
-	"github.com/cloudfoundry-incubator/rep/evacuation/evacuation_context"
-	"github.com/pivotal-golang/clock"
-	"github.com/pivotal-golang/lager"
+	"code.cloudfoundry.org/clock"
+	"code.cloudfoundry.org/executor"
+	"code.cloudfoundry.org/lager"
+	"code.cloudfoundry.org/rep/evacuation/evacuation_context"
 )
 
 type Evacuator struct {

@@ -5,30 +5,25 @@ import (
 	"net/http"
 	"strconv"
 
-	"github.com/cloudfoundry-incubator/rep/evacuation/evacuation_context"
-	"github.com/pivotal-golang/lager"
+	"code.cloudfoundry.org/lager"
+	"code.cloudfoundry.org/rep/evacuation/evacuation_context"
 )
 
 type EvacuationHandler struct {
 	evacuatable evacuation_context.Evacuatable
-	logger      lager.Logger
 }
 
 // Evacuation Handler serves a route that is called by the rep drain script
 func NewEvacuationHandler(
-	logger lager.Logger,
 	evacuatable evacuation_context.Evacuatable,
 ) *EvacuationHandler {
 	return &EvacuationHandler{
 		evacuatable: evacuatable,
-		logger:      logger,
 	}
 }
 
-func (h *EvacuationHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	logger := h.logger.Session("handling-evacuation")
-	logger.Info("starting")
-	defer logger.Info("finished")
+func (h *EvacuationHandler) ServeHTTP(w http.ResponseWriter, r *http.Request, logger lager.Logger) {
+	logger = logger.Session("handling-evacuation")
 
 	h.evacuatable.Evacuate()
 

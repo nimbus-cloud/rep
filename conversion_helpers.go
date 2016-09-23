@@ -6,8 +6,8 @@ import (
 	"net/url"
 	"strconv"
 
-	"github.com/cloudfoundry-incubator/bbs/models"
-	"github.com/cloudfoundry-incubator/executor"
+	"code.cloudfoundry.org/bbs/models"
+	"code.cloudfoundry.org/executor"
 )
 
 const (
@@ -87,7 +87,7 @@ func ActualLRPNetInfoFromContainer(container executor.Container) (*models.Actual
 }
 
 func LRPContainerGuid(processGuid, instanceGuid string) string {
-	return processGuid + "-" + instanceGuid
+	return instanceGuid
 }
 
 func NewRunRequestFromDesiredLRP(
@@ -120,7 +120,7 @@ func NewRunRequestFromDesiredLRP(
 			Guid:  desiredLRP.MetricsGuid,
 			Index: int(lrpKey.Index),
 		},
-		StartTimeout:       uint(desiredLRP.StartTimeout),
+		StartTimeoutMs:     uint(desiredLRP.StartTimeoutMs),
 		Privileged:         desiredLRP.Privileged,
 		CachedDependencies: ConvertCachedDependencies(desiredLRP.CachedDependencies),
 		Setup:              desiredLRP.Setup,
@@ -135,6 +135,7 @@ func NewRunRequestFromDesiredLRP(
 		}, executor.EnvironmentVariablesFromModel(desiredLRP.EnvironmentVariables)...),
 		TrustedSystemCertificatesPath: desiredLRP.TrustedSystemCertificatesPath,
 		VolumeMounts:                  mounts,
+		Network:                       convertNetwork(desiredLRP.Network),
 	}
 	tags := executor.Tags{}
 	return executor.NewRunRequest(containerGuid, &runInfo, tags), nil
@@ -171,6 +172,7 @@ func NewRunRequestFromTask(task *models.Task) (executor.RunRequest, error) {
 		EgressRules:                   task.EgressRules,
 		TrustedSystemCertificatesPath: task.TrustedSystemCertificatesPath,
 		VolumeMounts:                  mounts,
+		Network:                       convertNetwork(task.Network),
 	}
 	return executor.NewRunRequest(task.TaskGuid, &runInfo, tags), nil
 }
@@ -185,11 +187,13 @@ func ConvertCachedDependencies(modelDeps []*models.CachedDependency) []executor.
 
 func ConvertCachedDependency(modelDep *models.CachedDependency) executor.CachedDependency {
 	return executor.CachedDependency{
-		Name:      modelDep.Name,
-		From:      modelDep.From,
-		To:        modelDep.To,
-		CacheKey:  modelDep.CacheKey,
-		LogSource: modelDep.LogSource,
+		Name:              modelDep.Name,
+		From:              modelDep.From,
+		To:                modelDep.To,
+		CacheKey:          modelDep.CacheKey,
+		LogSource:         modelDep.LogSource,
+		ChecksumValue:     modelDep.ChecksumValue,
+		ChecksumAlgorithm: modelDep.ChecksumAlgorithm,
 	}
 }
 
@@ -207,20 +211,41 @@ func convertVolumeMounts(volumeMounts []*models.VolumeMount) ([]executor.VolumeM
 
 func convertVolumeMount(volumeMnt *models.VolumeMount) (executor.VolumeMount, error) {
 	var config map[string]interface{}
-	if len(volumeMnt.Config) > 0 {
-		err := json.Unmarshal(volumeMnt.Config, &config)
+
+	if len(volumeMnt.Shared.MountConfig) > 0 {
+		err := json.Unmarshal([]byte(volumeMnt.Shared.MountConfig), &config)
 		if err != nil {
 			return executor.VolumeMount{}, err
 		}
 	}
 
+	var mode executor.BindMountMode
+	switch volumeMnt.Mode {
+	case "r":
+		mode = executor.BindMountModeRO
+	case "rw":
+		mode = executor.BindMountModeRW
+	default:
+		return executor.VolumeMount{}, errors.New("unrecognized volume mount mode")
+	}
+
 	return executor.VolumeMount{
 		Driver:        volumeMnt.Driver,
-		VolumeId:      volumeMnt.VolumeId,
-		ContainerPath: volumeMnt.ContainerPath,
-		Mode:          executor.BindMountMode(volumeMnt.Mode),
+		VolumeId:      volumeMnt.Shared.VolumeId,
+		ContainerPath: volumeMnt.ContainerDir,
+		Mode:          mode,
 		Config:        config,
 	}, nil
+}
+
+func convertNetwork(network *models.Network) *executor.Network {
+	if network == nil {
+		return nil
+	}
+
+	return &executor.Network{
+		Properties: network.Properties,
+	}
 }
 
 func ConvertPortMappings(containerPorts []uint32) []executor.PortMapping {

@@ -3,9 +3,9 @@ package internal_test
 import (
 	"fmt"
 
-	"github.com/cloudfoundry-incubator/bbs"
-	bbsrunner "github.com/cloudfoundry-incubator/bbs/cmd/bbs/testrunner"
-	"github.com/cloudfoundry-incubator/consuladapter/consulrunner"
+	"code.cloudfoundry.org/bbs"
+	bbsrunner "code.cloudfoundry.org/bbs/cmd/bbs/testrunner"
+	"code.cloudfoundry.org/consuladapter/consulrunner"
 	"github.com/cloudfoundry/storeadapter/storerunner/etcdstorerunner"
 	. "github.com/onsi/ginkgo"
 	"github.com/onsi/ginkgo/config"
@@ -23,7 +23,7 @@ var bbsArgs bbsrunner.Args
 var bbsBinPath string
 var bbsRunner *ginkgomon.Runner
 var bbsProcess ifrit.Process
-var bbsClient bbs.Client
+var bbsClient bbs.InternalClient
 
 func TestInternal(t *testing.T) {
 	RegisterFailHandler(Fail)
@@ -31,7 +31,7 @@ func TestInternal(t *testing.T) {
 }
 
 var _ = SynchronizedBeforeSuite(func() []byte {
-	bbsBinPath, err := gexec.Build("github.com/cloudfoundry-incubator/bbs/cmd/bbs")
+	bbsBinPath, err := gexec.Build("code.cloudfoundry.org/bbs/cmd/bbs")
 	Expect(err).NotTo(HaveOccurred())
 	return []byte(bbsBinPath)
 }, func(payload []byte) {
@@ -43,8 +43,12 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 		"http",
 	)
 
+	bbsPort := 13000 + GinkgoParallelNode()*2
+	healthPort := bbsPort + 1
+	bbsAddress := fmt.Sprintf("127.0.0.1:%d", bbsPort)
+	healthAddress := fmt.Sprintf("127.0.0.1:%d", healthPort)
+
 	etcdRunner.Start()
-	bbsAddress := fmt.Sprintf("127.0.0.1:%d", 13000+GinkgoParallelNode())
 	bbsBinPath = string(payload)
 	bbsArgs = bbsrunner.Args{
 		Address:           bbsAddress,
@@ -52,6 +56,7 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 		AuctioneerAddress: "some-address",
 		EtcdCluster:       etcdRunner.NodeURLS()[0],
 		ConsulCluster:     consulRunner.ConsulCluster(),
+		HealthAddress:     healthAddress,
 
 		EncryptionKeys: []string{"label:key"},
 		ActiveKeyLabel: "label",

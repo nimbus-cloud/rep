@@ -1,37 +1,38 @@
 package main
 
 import (
+	"bytes"
 	"errors"
 	"flag"
 	"fmt"
-	"log"
+	"io/ioutil"
 	"net/url"
 	"os"
 	"strings"
 	"time"
 
-	"github.com/cloudfoundry-incubator/bbs"
-	"github.com/cloudfoundry-incubator/cf-debug-server"
-	cf_lager "github.com/cloudfoundry-incubator/cf-lager"
-	"github.com/cloudfoundry-incubator/cf_http"
-	"github.com/cloudfoundry-incubator/consuladapter"
-	"github.com/cloudfoundry-incubator/executor"
-	executorinit "github.com/cloudfoundry-incubator/executor/initializer"
-	"github.com/cloudfoundry-incubator/locket"
-	"github.com/cloudfoundry-incubator/rep"
-	"github.com/cloudfoundry-incubator/rep/auction_cell_rep"
-	"github.com/cloudfoundry-incubator/rep/evacuation"
-	"github.com/cloudfoundry-incubator/rep/evacuation/evacuation_context"
-	"github.com/cloudfoundry-incubator/rep/generator"
-	"github.com/cloudfoundry-incubator/rep/handlers"
-	"github.com/cloudfoundry-incubator/rep/harmonizer"
-	"github.com/cloudfoundry-incubator/rep/maintain"
+	"code.cloudfoundry.org/bbs"
+	"code.cloudfoundry.org/cfhttp"
+	"code.cloudfoundry.org/cflager"
+	"code.cloudfoundry.org/clock"
+	"code.cloudfoundry.org/consuladapter"
+	"code.cloudfoundry.org/debugserver"
+	"code.cloudfoundry.org/executor"
+	executorinit "code.cloudfoundry.org/executor/initializer"
+	"code.cloudfoundry.org/lager"
+	"code.cloudfoundry.org/localip"
+	"code.cloudfoundry.org/locket"
+	"code.cloudfoundry.org/operationq"
+	"code.cloudfoundry.org/rep"
+	"code.cloudfoundry.org/rep/auction_cell_rep"
+	"code.cloudfoundry.org/rep/evacuation"
+	"code.cloudfoundry.org/rep/evacuation/evacuation_context"
+	"code.cloudfoundry.org/rep/generator"
+	"code.cloudfoundry.org/rep/handlers"
+	"code.cloudfoundry.org/rep/harmonizer"
+	"code.cloudfoundry.org/rep/maintain"
 	"github.com/cloudfoundry/dropsonde"
 	"github.com/nu7hatch/gouuid"
-	"github.com/pivotal-golang/clock"
-	"github.com/pivotal-golang/lager"
-	"github.com/pivotal-golang/localip"
-	"github.com/pivotal-golang/operationq"
 	"github.com/tedsuo/ifrit"
 	"github.com/tedsuo/ifrit/grouper"
 	"github.com/tedsuo/ifrit/http_server"
@@ -204,8 +205,8 @@ const (
 )
 
 func main() {
-	cf_debug_server.AddFlags(flag.CommandLine)
-	cf_lager.AddFlags(flag.CommandLine)
+	debugserver.AddFlags(flag.CommandLine)
+	cflager.AddFlags(flag.CommandLine)
 
 	stackMap := stackPathMap{}
 	supportedProviders := providers{}
@@ -222,37 +223,56 @@ func main() {
 		preloadedRootFSes = append(preloadedRootFSes, k)
 	}
 
-	cf_http.Initialize(*communicationTimeout)
+	cfhttp.Initialize(*communicationTimeout)
 
 	clock := clock.NewClock()
-	logger, reconfigurableSink := cf_lager.New(*sessionName)
+	logger, reconfigurableSink := cflager.New(*sessionName)
 
-	var executorConfiguration executorinit.Configuration
-	var gardenHealthcheckRootFS string
+	var (
+		executorConfiguration   executorinit.Configuration
+		gardenHealthcheckRootFS string
+		certBytes               []byte
+		err                     error
+	)
+
 	if len(preloadedRootFSes) == 0 {
 		gardenHealthcheckRootFS = ""
 	} else {
 		gardenHealthcheckRootFS = stackMap[preloadedRootFSes[0]]
 	}
-	executorConfiguration = executorConfig(gardenHealthcheckRootFS, gardenHealthcheckArgs, gardenHealthcheckEnv)
+
+	if *pathToCACertsForDownloads != "" {
+		certBytes, err = ioutil.ReadFile(*pathToCACertsForDownloads)
+		if err != nil {
+			logger.Error("failed-to-open-ca-cert-file", err)
+			os.Exit(1)
+		}
+
+		certBytes = bytes.TrimSpace(certBytes)
+	}
+
+	executorConfiguration = executorConfig(certBytes, gardenHealthcheckRootFS, gardenHealthcheckArgs, gardenHealthcheckEnv)
 	if !executorConfiguration.Validate(logger) {
-		os.Exit(1)
+		logger.Fatal("", errors.New("failed-to-configure-executor"))
 	}
 
 	initializeDropsonde(logger)
 
 	if *cellID == "" {
-		log.Fatalf("-cellID must be specified")
+		logger.Error("invalid-cell-id", errors.New("-cellID must be specified"))
+		os.Exit(1)
 	}
 
 	executorClient, executorMembers, err := executorinit.Initialize(logger, executorConfiguration, clock)
 	if err != nil {
-		log.Fatalf("Failed to initialize executor: %s", err.Error())
+		logger.Error("failed-to-initialize-executor", err)
+		os.Exit(1)
 	}
 	defer executorClient.Cleanup(logger)
 
 	if err := validateBBSAddress(); err != nil {
-		logger.Fatal("invalid-bbs-address", err)
+		logger.Error("invalid-bbs-address", err)
+		os.Exit(1)
 	}
 
 	serviceClient := initializeServiceClient(logger)
@@ -278,8 +298,8 @@ func main() {
 	cleanup := evacuation.NewEvacuationCleanup(logger, *cellID, bbsClient)
 
 	members := grouper.Members{
-		{"http_server", httpServer},
 		{"presence", initializeCellPresence(address, serviceClient, executorClient, logger, supportedProviders, preloadedRootFSes)},
+		{"http_server", httpServer},
 		{"evacuation-cleanup", cleanup},
 		{"bulker", harmonizer.NewBulker(logger, *pollingInterval, *evacuationPollingInterval, evacuationNotifier, clock, opGenerator, queue)},
 		{"event-consumer", harmonizer.NewEventConsumer(logger, opGenerator, queue)},
@@ -288,9 +308,9 @@ func main() {
 
 	members = append(executorMembers, members...)
 
-	if dbgAddr := cf_debug_server.DebugAddress(flag.CommandLine); dbgAddr != "" {
+	if dbgAddr := debugserver.DebugAddress(flag.CommandLine); dbgAddr != "" {
 		members = append(grouper.Members{
-			{"debug-server", cf_debug_server.Runner(dbgAddr, reconfigurableSink)},
+			{"debug-server", debugserver.Runner(dbgAddr, reconfigurableSink)},
 		}, members...)
 	}
 
@@ -339,7 +359,7 @@ func initializeServiceClient(logger lager.Logger) bbs.ServiceClient {
 }
 
 func initializeServer(
-	bbsClient bbs.Client,
+	bbsClient bbs.InternalClient,
 	executorClient executor.Client,
 	evacuatable evacuation_context.Evacuatable,
 	evacuationReporter evacuation_context.EvacuationReporter,
@@ -347,8 +367,7 @@ func initializeServer(
 	stackMap rep.StackPathMap,
 	supportedProviders []string,
 ) (ifrit.Runner, string) {
-
-	auctionCellRep := auction_cell_rep.New(*cellID, stackMap, supportedProviders, *zone, generateGuid, executorClient, evacuationReporter, logger)
+	auctionCellRep := auction_cell_rep.New(*cellID, stackMap, supportedProviders, *zone, generateGuid, executorClient, evacuationReporter)
 	handlers := handlers.New(auctionCellRep, executorClient, evacuatable, logger)
 
 	router, err := rata.NewRouter(rep.Routes, handlers)
@@ -382,7 +401,7 @@ func generateGuid() (string, error) {
 	return guid.String(), nil
 }
 
-func initializeBBSClient(logger lager.Logger) bbs.Client {
+func initializeBBSClient(logger lager.Logger) bbs.InternalClient {
 	bbsURL, err := url.Parse(*bbsAddress)
 	if err != nil {
 		logger.Fatal("Invalid BBS URL", err)

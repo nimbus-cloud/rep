@@ -3,10 +3,10 @@ package rep_test
 import (
 	"strconv"
 
-	"github.com/cloudfoundry-incubator/bbs/models"
-	"github.com/cloudfoundry-incubator/bbs/models/test/model_helpers"
-	"github.com/cloudfoundry-incubator/executor"
-	"github.com/cloudfoundry-incubator/rep"
+	"code.cloudfoundry.org/bbs/models"
+	"code.cloudfoundry.org/bbs/models/test/model_helpers"
+	"code.cloudfoundry.org/executor"
+	"code.cloudfoundry.org/rep"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -291,10 +291,11 @@ var _ = Describe("Resources", func() {
 					Guid:  desiredLRP.MetricsGuid,
 					Index: int(actualLRP.Index),
 				},
-				StartTimeout: uint(desiredLRP.StartTimeout),
-				Privileged:   desiredLRP.Privileged,
+				StartTimeoutMs: uint(desiredLRP.StartTimeoutMs),
+				Privileged:     desiredLRP.Privileged,
 				CachedDependencies: []executor.CachedDependency{
 					{Name: "app bits", From: "blobstore.com/bits/app-bits", To: "/usr/local/app", CacheKey: "cache-key", LogSource: "log-source"},
+					{Name: "app bits with checksum", From: "blobstore.com/bits/app-bits-checksum", To: "/usr/local/app-checksum", CacheKey: "cache-key", LogSource: "log-source", ChecksumAlgorithm: "md5", ChecksumValue: "checksum-value"},
 				},
 				Setup:       desiredLRP.Setup,
 				Action:      desiredLRP.Action,
@@ -307,13 +308,40 @@ var _ = Describe("Resources", func() {
 					{Name: "CF_INSTANCE_INDEX", Value: strconv.Itoa(int(actualLRP.Index))},
 				}, executor.EnvironmentVariablesFromModel(desiredLRP.EnvironmentVariables)...),
 				TrustedSystemCertificatesPath: "/etc/somepath",
-				VolumeMounts:                  []executor.VolumeMount{{Driver: "my-driver", VolumeId: "my-volume", ContainerPath: "/mnt/mypath", Mode: executor.BindMountModeRO}},
+				VolumeMounts: []executor.VolumeMount{
+					{
+						Driver:        "my-driver",
+						VolumeId:      "my-volume",
+						ContainerPath: "/mnt/mypath",
+						Config:        map[string]interface{}{"foo": "bar"},
+						Mode:          executor.BindMountModeRO,
+					},
+				},
+
+				Network: &executor.Network{
+					Properties: map[string]string{
+						"some-key":       "some-value",
+						"some-other-key": "some-other-value",
+					},
+				},
 			}))
+		})
+
+		Context("when the network is nil", func() {
+			BeforeEach(func() {
+				desiredLRP.Network = nil
+			})
+
+			It("sets a nil network on the result", func() {
+				runReq, err := rep.NewRunRequestFromDesiredLRP(containerGuid, desiredLRP, &actualLRP.ActualLRPKey, &actualLRP.ActualLRPInstanceKey)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(runReq.Network).To(BeNil())
+			})
 		})
 
 		Context("when a volumeMount config is invalid", func() {
 			BeforeEach(func() {
-				desiredLRP.VolumeMounts[0].Config = []byte("{{")
+				desiredLRP.VolumeMounts[0].Shared.MountConfig = "{{"
 			})
 
 			It("returns an error", func() {
@@ -355,6 +383,7 @@ var _ = Describe("Resources", func() {
 				Privileged: task.Privileged,
 				CachedDependencies: []executor.CachedDependency{
 					{Name: "app bits", From: "blobstore.com/bits/app-bits", To: "/usr/local/app", CacheKey: "cache-key", LogSource: "log-source"},
+					{Name: "app bits with checksum", From: "blobstore.com/bits/app-bits-checksum", To: "/usr/local/app-checksum", CacheKey: "cache-key", LogSource: "log-source", ChecksumAlgorithm: "md5", ChecksumValue: "checksum-value"},
 				},
 				LogConfig: executor.LogConfig{
 					Guid:       task.LogGuid,
@@ -367,8 +396,32 @@ var _ = Describe("Resources", func() {
 				Env:                           executor.EnvironmentVariablesFromModel(task.EnvironmentVariables),
 				EgressRules:                   task.EgressRules,
 				TrustedSystemCertificatesPath: "/etc/somepath",
-				VolumeMounts:                  []executor.VolumeMount{{Driver: "my-driver", VolumeId: "my-volume", ContainerPath: "/mnt/mypath", Mode: executor.BindMountModeRO}},
+				VolumeMounts: []executor.VolumeMount{{
+					Driver:        "my-driver",
+					VolumeId:      "my-volume",
+					ContainerPath: "/mnt/mypath",
+					Config:        map[string]interface{}{"foo": "bar"},
+					Mode:          executor.BindMountModeRO,
+				}},
+				Network: &executor.Network{
+					Properties: map[string]string{
+						"some-key":       "some-value",
+						"some-other-key": "some-other-value",
+					},
+				},
 			}))
+		})
+
+		Context("when the network is nil", func() {
+			BeforeEach(func() {
+				task.Network = nil
+			})
+
+			It("sets a nil network on the result", func() {
+				runReq, err := rep.NewRunRequestFromTask(task)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(runReq.Network).To(BeNil())
+			})
 		})
 
 		Context("when the rootfs is not preloaded", func() {
@@ -385,7 +438,7 @@ var _ = Describe("Resources", func() {
 
 		Context("when a volumeMount config is invalid", func() {
 			BeforeEach(func() {
-				task.VolumeMounts[0].Config = []byte("{{")
+				task.VolumeMounts[0].Shared.MountConfig = "{{"
 			})
 
 			It("returns an error", func() {

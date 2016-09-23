@@ -1,11 +1,11 @@
 package internal
 
 import (
-	"github.com/cloudfoundry-incubator/bbs"
-	"github.com/cloudfoundry-incubator/bbs/models"
-	"github.com/cloudfoundry-incubator/executor"
-	"github.com/cloudfoundry-incubator/rep/evacuation/evacuation_context"
-	"github.com/pivotal-golang/lager"
+	"code.cloudfoundry.org/bbs"
+	"code.cloudfoundry.org/bbs/models"
+	"code.cloudfoundry.org/executor"
+	"code.cloudfoundry.org/lager"
+	"code.cloudfoundry.org/rep/evacuation/evacuation_context"
 )
 
 type lrpContainer struct {
@@ -35,7 +35,7 @@ type lrpProcessor struct {
 }
 
 func NewLRPProcessor(
-	bbsClient bbs.Client,
+	bbsClient bbs.InternalClient,
 	containerDelegate ContainerDelegate,
 	cellID string,
 	evacuationReporter evacuation_context.EvacuationReporter,

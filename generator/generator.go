@@ -4,14 +4,14 @@ package generator
 import (
 	"fmt"
 
-	"github.com/cloudfoundry-incubator/bbs"
-	"github.com/cloudfoundry-incubator/bbs/models"
-	"github.com/cloudfoundry-incubator/executor"
-	"github.com/cloudfoundry-incubator/rep"
-	"github.com/cloudfoundry-incubator/rep/evacuation/evacuation_context"
-	"github.com/cloudfoundry-incubator/rep/generator/internal"
-	"github.com/pivotal-golang/lager"
-	"github.com/pivotal-golang/operationq"
+	"code.cloudfoundry.org/bbs"
+	"code.cloudfoundry.org/bbs/models"
+	"code.cloudfoundry.org/executor"
+	"code.cloudfoundry.org/lager"
+	"code.cloudfoundry.org/operationq"
+	"code.cloudfoundry.org/rep"
+	"code.cloudfoundry.org/rep/evacuation/evacuation_context"
+	"code.cloudfoundry.org/rep/generator/internal"
 )
 
 //go:generate counterfeiter -o fake_generator/fake_generator.go . Generator
@@ -27,7 +27,7 @@ type Generator interface {
 
 type generator struct {
 	cellID            string
-	bbs               bbs.Client
+	bbs               bbs.InternalClient
 	executorClient    executor.Client
 	lrpProcessor      internal.LRPProcessor
 	taskProcessor     internal.TaskProcessor
@@ -36,7 +36,7 @@ type generator struct {
 
 func New(
 	cellID string,
-	bbs bbs.Client,
+	bbs bbs.InternalClient,
 	executorClient executor.Client,
 	evacuationReporter evacuation_context.EvacuationReporter,
 	evacuationTTLInSeconds uint64,
@@ -83,7 +83,7 @@ func (g *generator) BatchOperations(logger lager.Logger) (map[string]operationq.
 
 	go func() {
 		filter := models.ActualLRPFilter{CellID: g.cellID}
-		groups, err := g.bbs.ActualLRPGroups(filter)
+		groups, err := g.bbs.ActualLRPGroups(logger, filter)
 		if err != nil {
 			logger.Error("failed-to-retrieve-lrp-groups", err)
 			err = fmt.Errorf("failed to retrieve lrps: %s", err.Error())
@@ -101,7 +101,7 @@ func (g *generator) BatchOperations(logger lager.Logger) (map[string]operationq.
 	}()
 
 	go func() {
-		foundTasks, err := g.bbs.TasksByCellID(g.cellID)
+		foundTasks, err := g.bbs.TasksByCellID(logger, g.cellID)
 		if err != nil {
 			logger.Error("failed-to-retrieve-tasks", err)
 			err = fmt.Errorf("failed to retrieve tasks: %s", err.Error())
@@ -167,16 +167,16 @@ func (g *generator) BatchOperations(logger lager.Logger) (map[string]operationq.
 }
 
 func (g *generator) OperationStream(logger lager.Logger) (<-chan operationq.Operation, error) {
-	logger = logger.Session("operation-stream")
+	streamLogger := logger.Session("operation-stream")
 
-	logger.Info("subscribing")
+	streamLogger.Info("subscribing")
 	events, err := g.executorClient.SubscribeToEvents(logger)
 	if err != nil {
-		logger.Error("failed-subscribing", err)
+		streamLogger.Error("failed-subscribing", err)
 		return nil, err
 	}
 
-	logger.Info("succeeded-subscribing")
+	streamLogger.Info("succeeded-subscribing")
 
 	opChan := make(chan operationq.Operation)
 
@@ -186,14 +186,14 @@ func (g *generator) OperationStream(logger lager.Logger) (<-chan operationq.Oper
 		for {
 			e, err := events.Next()
 			if err != nil {
-				logger.Debug("event-stream-closed")
+				streamLogger.Debug("event-stream-closed")
 				close(opChan)
 				return
 			}
 
 			lifecycle, ok := e.(executor.LifecycleEvent)
 			if !ok {
-				logger.Debug("received-non-lifecycle-event")
+				streamLogger.Debug("received-non-lifecycle-event")
 				continue
 			}
 

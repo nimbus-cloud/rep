@@ -4,19 +4,16 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/cloudfoundry-incubator/rep"
-	"github.com/pivotal-golang/lager"
+	"code.cloudfoundry.org/lager"
+	"code.cloudfoundry.org/rep"
 )
 
 type perform struct {
-	rep    rep.AuctionCellClient
-	logger lager.Logger
+	rep rep.AuctionCellClient
 }
 
-func (h *perform) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	logger := h.logger.Session("auction-perform-work")
-	logger.Info("handling")
-
+func (h *perform) ServeHTTP(w http.ResponseWriter, r *http.Request, logger lager.Logger) {
+	logger = logger.Session("auction-perform-work")
 	var work rep.Work
 	err := json.NewDecoder(r.Body).Decode(&work)
 
@@ -26,7 +23,7 @@ func (h *perform) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	failedWork, err := h.rep.Perform(work)
+	failedWork, err := h.rep.Perform(logger, work)
 	if err != nil {
 		w.WriteHeader(http.StatusInternalServerError)
 		logger.Error("failed-to-perform-work", err)
@@ -34,5 +31,4 @@ func (h *perform) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	json.NewEncoder(w).Encode(failedWork)
-	logger.Info("success")
 }

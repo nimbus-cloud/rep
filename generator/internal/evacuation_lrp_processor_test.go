@@ -5,14 +5,14 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/cloudfoundry-incubator/bbs/fake_bbs"
-	"github.com/cloudfoundry-incubator/bbs/models"
-	"github.com/cloudfoundry-incubator/executor"
-	"github.com/cloudfoundry-incubator/rep"
-	"github.com/cloudfoundry-incubator/rep/evacuation/evacuation_context/fake_evacuation_context"
-	"github.com/cloudfoundry-incubator/rep/generator/internal"
-	"github.com/cloudfoundry-incubator/rep/generator/internal/fake_internal"
-	"github.com/pivotal-golang/lager/lagertest"
+	"code.cloudfoundry.org/bbs/fake_bbs"
+	"code.cloudfoundry.org/bbs/models"
+	"code.cloudfoundry.org/executor"
+	"code.cloudfoundry.org/lager/lagertest"
+	"code.cloudfoundry.org/rep"
+	"code.cloudfoundry.org/rep/evacuation/evacuation_context/fake_evacuation_context"
+	"code.cloudfoundry.org/rep/generator/internal"
+	"code.cloudfoundry.org/rep/generator/internal/fake_internal"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -28,7 +28,7 @@ var _ = Describe("EvacuationLrpProcessor", func() {
 
 		var (
 			logger                 *lagertest.TestLogger
-			fakeBBS                *fake_bbs.FakeClient
+			fakeBBS                *fake_bbs.FakeInternalClient
 			fakeContainerDelegate  *fake_internal.FakeContainerDelegate
 			fakeEvacuationReporter *fake_evacuation_context.FakeEvacuationReporter
 
@@ -47,7 +47,7 @@ var _ = Describe("EvacuationLrpProcessor", func() {
 		BeforeEach(func() {
 			logger = lagertest.NewTestLogger("test")
 
-			fakeBBS = new(fake_bbs.FakeClient)
+			fakeBBS = new(fake_bbs.FakeInternalClient)
 
 			fakeContainerDelegate = &fake_internal.FakeContainerDelegate{}
 			fakeEvacuationReporter = &fake_evacuation_context.FakeEvacuationReporter{}
@@ -95,7 +95,7 @@ var _ = Describe("EvacuationLrpProcessor", func() {
 
 			It("evacuates the lrp", func() {
 				Expect(fakeBBS.EvacuateClaimedActualLRPCallCount()).To(Equal(1))
-				actualLRPKey, actualLRPContainerKey := fakeBBS.EvacuateClaimedActualLRPArgsForCall(0)
+				_, actualLRPKey, actualLRPContainerKey := fakeBBS.EvacuateClaimedActualLRPArgsForCall(0)
 				Expect(*actualLRPKey).To(Equal(lrpKey))
 				Expect(*actualLRPContainerKey).To(Equal(lrpInstanceKey))
 			})
@@ -144,7 +144,7 @@ var _ = Describe("EvacuationLrpProcessor", func() {
 
 			It("evacuates the lrp", func() {
 				Expect(fakeBBS.EvacuateClaimedActualLRPCallCount()).To(Equal(1))
-				actualLRPKey, actualLRPContainerKey := fakeBBS.EvacuateClaimedActualLRPArgsForCall(0)
+				_, actualLRPKey, actualLRPContainerKey := fakeBBS.EvacuateClaimedActualLRPArgsForCall(0)
 				Expect(*actualLRPKey).To(Equal(lrpKey))
 				Expect(*actualLRPContainerKey).To(Equal(lrpInstanceKey))
 			})
@@ -193,7 +193,7 @@ var _ = Describe("EvacuationLrpProcessor", func() {
 
 			It("evacuates the lrp", func() {
 				Expect(fakeBBS.EvacuateClaimedActualLRPCallCount()).To(Equal(1))
-				actualLRPKey, actualLRPContainerKey := fakeBBS.EvacuateClaimedActualLRPArgsForCall(0)
+				_, actualLRPKey, actualLRPContainerKey := fakeBBS.EvacuateClaimedActualLRPArgsForCall(0)
 				Expect(*actualLRPKey).To(Equal(lrpKey))
 				Expect(*actualLRPContainerKey).To(Equal(lrpInstanceKey))
 			})
@@ -248,7 +248,7 @@ var _ = Describe("EvacuationLrpProcessor", func() {
 
 			It("evacuates the lrp", func() {
 				Expect(fakeBBS.EvacuateRunningActualLRPCallCount()).To(Equal(1))
-				actualLRPKey, actualLRPContainerKey, actualLRPNetInfo, actualTTL := fakeBBS.EvacuateRunningActualLRPArgsForCall(0)
+				_, actualLRPKey, actualLRPContainerKey, actualLRPNetInfo, actualTTL := fakeBBS.EvacuateRunningActualLRPArgsForCall(0)
 				Expect(*actualLRPKey).To(Equal(lrpKey))
 				Expect(*actualLRPContainerKey).To(Equal(lrpInstanceKey))
 				Expect(*actualLRPNetInfo).To(Equal(lrpNetInfo))
@@ -305,7 +305,7 @@ var _ = Describe("EvacuationLrpProcessor", func() {
 
 			It("evacuates the lrp", func() {
 				Expect(fakeBBS.EvacuateStoppedActualLRPCallCount()).To(Equal(1))
-				actualLRPKey, actualLRPContainerKey := fakeBBS.EvacuateStoppedActualLRPArgsForCall(0)
+				_, actualLRPKey, actualLRPContainerKey := fakeBBS.EvacuateStoppedActualLRPArgsForCall(0)
 				Expect(*actualLRPKey).To(Equal(lrpKey))
 				Expect(*actualLRPContainerKey).To(Equal(lrpInstanceKey))
 			})
@@ -356,7 +356,7 @@ var _ = Describe("EvacuationLrpProcessor", func() {
 
 			It("evacuates the lrp", func() {
 				Expect(fakeBBS.EvacuateCrashedActualLRPCallCount()).To(Equal(1))
-				actualLRPKey, actualLRPContainerKey, reason := fakeBBS.EvacuateCrashedActualLRPArgsForCall(0)
+				_, actualLRPKey, actualLRPContainerKey, reason := fakeBBS.EvacuateCrashedActualLRPArgsForCall(0)
 				Expect(*actualLRPKey).To(Equal(lrpKey))
 				Expect(*actualLRPContainerKey).To(Equal(lrpInstanceKey))
 				Expect(reason).To(Equal("crashed"))

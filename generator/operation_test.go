@@ -3,12 +3,12 @@ package generator_test
 import (
 	"errors"
 
-	"github.com/cloudfoundry-incubator/bbs/models"
-	"github.com/cloudfoundry-incubator/executor"
-	"github.com/cloudfoundry-incubator/rep"
-	"github.com/cloudfoundry-incubator/rep/generator"
-	"github.com/cloudfoundry-incubator/rep/generator/internal"
-	"github.com/cloudfoundry-incubator/rep/generator/internal/fake_internal"
+	"code.cloudfoundry.org/bbs/models"
+	"code.cloudfoundry.org/executor"
+	"code.cloudfoundry.org/rep"
+	"code.cloudfoundry.org/rep/generator"
+	"code.cloudfoundry.org/rep/generator/internal"
+	"code.cloudfoundry.org/rep/generator/internal/fake_internal"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	. "github.com/onsi/gomega/gbytes"
@@ -66,10 +66,11 @@ var _ = Describe("Operation", func() {
 
 				It("removes the actualLRP", func() {
 					Expect(fakeBBS.RemoveActualLRPCallCount()).To(Equal(1))
-					processGuid, index := fakeBBS.RemoveActualLRPArgsForCall(0)
+					_, processGuid, index, actualInstanceKey := fakeBBS.RemoveActualLRPArgsForCall(0)
 
 					Expect(processGuid).To(Equal(lrpKey.ProcessGuid))
 					Expect(index).To(Equal(int(lrpKey.Index)))
+					Expect(*actualInstanceKey).To(Equal(instanceKey))
 				})
 			})
 
@@ -142,7 +143,7 @@ var _ = Describe("Operation", func() {
 
 				It("removes the actualLRP", func() {
 					Expect(fakeBBS.RemoveEvacuatingActualLRPCallCount()).To(Equal(1))
-					actualLRPKey, actualLRPContainerKey := fakeBBS.RemoveEvacuatingActualLRPArgsForCall(0)
+					_, actualLRPKey, actualLRPContainerKey := fakeBBS.RemoveEvacuatingActualLRPArgsForCall(0)
 					Expect(*actualLRPKey).To(Equal(lrpKey))
 					Expect(*actualLRPContainerKey).To(Equal(instanceKey))
 				})
@@ -217,15 +218,16 @@ var _ = Describe("Operation", func() {
 
 				It("removes the instance actualLRP", func() {
 					Expect(fakeBBS.RemoveActualLRPCallCount()).To(Equal(1))
-					processGuid, index := fakeBBS.RemoveActualLRPArgsForCall(0)
+					_, processGuid, index, actualInstanceKey := fakeBBS.RemoveActualLRPArgsForCall(0)
 
 					Expect(processGuid).To(Equal(lrpKey.ProcessGuid))
 					Expect(index).To(Equal(int(lrpKey.Index)))
+					Expect(*actualInstanceKey).To(Equal(instanceKey))
 				})
 
 				It("removes the evacuating actualLRP", func() {
 					Expect(fakeBBS.RemoveEvacuatingActualLRPCallCount()).To(Equal(1))
-					actualLRPKey, actualLRPContainerKey := fakeBBS.RemoveEvacuatingActualLRPArgsForCall(0)
+					_, actualLRPKey, actualLRPContainerKey := fakeBBS.RemoveEvacuatingActualLRPArgsForCall(0)
 					Expect(*actualLRPKey).To(Equal(lrpKey))
 					Expect(*actualLRPContainerKey).To(Equal(instanceKey))
 				})
@@ -293,7 +295,7 @@ var _ = Describe("Operation", func() {
 
 				It("fails the task", func() {
 					Expect(fakeBBS.FailTaskCallCount()).To(Equal(1))
-					actualTaskGuid, actualFailureReason := fakeBBS.FailTaskArgsForCall(0)
+					_, actualTaskGuid, actualFailureReason := fakeBBS.FailTaskArgsForCall(0)
 					Expect(actualTaskGuid).To(Equal(taskGuid))
 					Expect(actualFailureReason).To(Equal(internal.TaskCompletionReasonMissingContainer))
 				})

@@ -3,24 +3,24 @@ package evacuation
 import (
 	"os"
 
-	"github.com/cloudfoundry-incubator/bbs"
-	"github.com/cloudfoundry-incubator/bbs/models"
-	"github.com/cloudfoundry-incubator/runtime-schema/metric"
-	"github.com/pivotal-golang/lager"
+	"code.cloudfoundry.org/bbs"
+	"code.cloudfoundry.org/bbs/models"
+	"code.cloudfoundry.org/lager"
+	"code.cloudfoundry.org/runtimeschema/metric"
 )
 
-var strandedEvacuatedActualLRPs = metric.Metric("StrandedEvacuatedActualLRPs")
+var strandedEvacuatingActualLRPs = metric.Metric("StrandedEvacuatingActualLRPs")
 
 type EvacuationCleanup struct {
 	logger    lager.Logger
 	cellID    string
-	bbsClient bbs.Client
+	bbsClient bbs.InternalClient
 }
 
 func NewEvacuationCleanup(
 	logger lager.Logger,
 	cellID string,
-	bbsClient bbs.Client,
+	bbsClient bbs.InternalClient,
 ) *EvacuationCleanup {
 	return &EvacuationCleanup{
 		logger:    logger,
@@ -42,7 +42,7 @@ func (e *EvacuationCleanup) Run(signals <-chan os.Signal, ready chan<- struct{})
 		logger.Info("signalled", lager.Data{"signal": signal})
 	}
 
-	actualLRPGroups, err := e.bbsClient.ActualLRPGroups(models.ActualLRPFilter{CellID: e.cellID})
+	actualLRPGroups, err := e.bbsClient.ActualLRPGroups(logger, models.ActualLRPFilter{CellID: e.cellID})
 	if err != nil {
 		logger.Error("failed-fetching-actual-lrp-groups", err)
 		return err
@@ -56,15 +56,15 @@ func (e *EvacuationCleanup) Run(signals <-chan os.Signal, ready chan<- struct{})
 
 		strandedEvacuationCount++
 		actualLRP := group.Evacuating
-		err = e.bbsClient.RemoveEvacuatingActualLRP(&actualLRP.ActualLRPKey, &actualLRP.ActualLRPInstanceKey)
+		err = e.bbsClient.RemoveEvacuatingActualLRP(logger, &actualLRP.ActualLRPKey, &actualLRP.ActualLRPInstanceKey)
 		if err != nil {
 			logger.Error("failed-removing-evacuating-actual-lrp", err, lager.Data{"lrp-key": actualLRP.ActualLRPKey})
 		}
 	}
 
-	err = strandedEvacuatedActualLRPs.Send(strandedEvacuationCount)
+	err = strandedEvacuatingActualLRPs.Send(strandedEvacuationCount)
 	if err != nil {
-		logger.Error("failed-sending-stranded-evaucating-lrp-metric", err, lager.Data{"count": strandedEvacuationCount})
+		logger.Error("failed-sending-stranded-evacuating-lrp-metric", err, lager.Data{"count": strandedEvacuationCount})
 	}
 
 	return nil

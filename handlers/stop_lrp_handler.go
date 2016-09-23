@@ -4,42 +4,38 @@ import (
 	"errors"
 	"net/http"
 
-	"github.com/cloudfoundry-incubator/executor"
-	"github.com/cloudfoundry-incubator/rep"
-	"github.com/pivotal-golang/lager"
+	"code.cloudfoundry.org/executor"
+	"code.cloudfoundry.org/lager"
+	"code.cloudfoundry.org/rep"
 )
 
 type StopLRPInstanceHandler struct {
-	logger lager.Logger
 	client executor.Client
 }
 
-func NewStopLRPInstanceHandler(logger lager.Logger, client executor.Client) *StopLRPInstanceHandler {
+func NewStopLRPInstanceHandler(client executor.Client) *StopLRPInstanceHandler {
 	return &StopLRPInstanceHandler{
-		logger: logger,
 		client: client,
 	}
 }
 
-func (h StopLRPInstanceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (h StopLRPInstanceHandler) ServeHTTP(w http.ResponseWriter, r *http.Request, logger lager.Logger) {
 	processGuid := r.FormValue(":process_guid")
 	instanceGuid := r.FormValue(":instance_guid")
 
-	logger := h.logger.Session("handling-stop-lrp-instance", lager.Data{
+	logger = logger.Session("handling-stop-lrp-instance", lager.Data{
 		"process-guid":  processGuid,
 		"instance-guid": instanceGuid,
 	})
 
 	if processGuid == "" {
-		err := errors.New("process_guid missing from request")
-		logger.Error("missing-process-guid", err)
+		logger.Error("missing-process-guid", errors.New("process_guid missing from request"))
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}
 
 	if instanceGuid == "" {
-		err := errors.New("instance_guid missing from request")
-		logger.Error("missing-instance-guid", err)
+		logger.Error("missing-instance-guid", errors.New("instance_guid missing from request"))
 		w.WriteHeader(http.StatusBadRequest)
 		return
 	}

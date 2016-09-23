@@ -3,24 +3,24 @@ package generator
 import (
 	"fmt"
 
-	"github.com/cloudfoundry-incubator/bbs"
-	"github.com/cloudfoundry-incubator/bbs/models"
-	"github.com/cloudfoundry-incubator/rep"
-	"github.com/cloudfoundry-incubator/rep/generator/internal"
-	"github.com/pivotal-golang/lager"
+	"code.cloudfoundry.org/bbs"
+	"code.cloudfoundry.org/bbs/models"
+	"code.cloudfoundry.org/lager"
+	"code.cloudfoundry.org/rep"
+	"code.cloudfoundry.org/rep/generator/internal"
 )
 
 // ResidualInstanceLRPOperation processes an instance ActualLRP with no matching container.
 type ResidualInstanceLRPOperation struct {
 	logger            lager.Logger
-	bbsClient         bbs.Client
+	bbsClient         bbs.InternalClient
 	containerDelegate internal.ContainerDelegate
 	models.ActualLRPKey
 	models.ActualLRPInstanceKey
 }
 
 func NewResidualInstanceLRPOperation(logger lager.Logger,
-	bbsClient bbs.Client,
+	bbsClient bbs.InternalClient,
 	containerDelegate internal.ContainerDelegate,
 	lrpKey models.ActualLRPKey,
 	instanceKey models.ActualLRPInstanceKey,
@@ -52,20 +52,23 @@ func (o *ResidualInstanceLRPOperation) Execute() {
 		return
 	}
 
-	o.bbsClient.RemoveActualLRP(o.ProcessGuid, int(o.Index))
+	o.bbsClient.RemoveActualLRP(logger, o.ProcessGuid, int(o.Index), &models.ActualLRPInstanceKey{
+		InstanceGuid: o.InstanceGuid,
+		CellId:       o.CellId,
+	})
 }
 
 // ResidualEvacuatingLRPOperation processes an evacuating ActualLRP with no matching container.
 type ResidualEvacuatingLRPOperation struct {
 	logger            lager.Logger
-	bbsClient         bbs.Client
+	bbsClient         bbs.InternalClient
 	containerDelegate internal.ContainerDelegate
 	models.ActualLRPKey
 	models.ActualLRPInstanceKey
 }
 
 func NewResidualEvacuatingLRPOperation(logger lager.Logger,
-	bbsClient bbs.Client,
+	bbsClient bbs.InternalClient,
 	containerDelegate internal.ContainerDelegate,
 	lrpKey models.ActualLRPKey,
 	instanceKey models.ActualLRPInstanceKey,
@@ -97,20 +100,20 @@ func (o *ResidualEvacuatingLRPOperation) Execute() {
 		return
 	}
 
-	o.bbsClient.RemoveEvacuatingActualLRP(&o.ActualLRPKey, &o.ActualLRPInstanceKey)
+	o.bbsClient.RemoveEvacuatingActualLRP(logger, &o.ActualLRPKey, &o.ActualLRPInstanceKey)
 }
 
 // ResidualJointLRPOperation processes an evacuating ActualLRP with no matching container.
 type ResidualJointLRPOperation struct {
 	logger            lager.Logger
-	bbsClient         bbs.Client
+	bbsClient         bbs.InternalClient
 	containerDelegate internal.ContainerDelegate
 	models.ActualLRPKey
 	models.ActualLRPInstanceKey
 }
 
 func NewResidualJointLRPOperation(logger lager.Logger,
-	bbsClient bbs.Client,
+	bbsClient bbs.InternalClient,
 	containerDelegate internal.ContainerDelegate,
 	lrpKey models.ActualLRPKey,
 	instanceKey models.ActualLRPInstanceKey,
@@ -144,22 +147,22 @@ func (o *ResidualJointLRPOperation) Execute() {
 
 	actualLRPKey := models.NewActualLRPKey(o.ProcessGuid, int32(o.Index), o.Domain)
 	actualLRPInstanceKey := models.NewActualLRPInstanceKey(o.InstanceGuid, o.CellId)
-	o.bbsClient.RemoveActualLRP(o.ProcessGuid, int(o.Index))
-	o.bbsClient.RemoveEvacuatingActualLRP(&actualLRPKey, &actualLRPInstanceKey)
+	o.bbsClient.RemoveActualLRP(logger, o.ProcessGuid, int(o.Index), &o.ActualLRPInstanceKey)
+	o.bbsClient.RemoveEvacuatingActualLRP(logger, &actualLRPKey, &actualLRPInstanceKey)
 }
 
 // ResidualTaskOperation processes a Task with no matching container.
 type ResidualTaskOperation struct {
 	logger            lager.Logger
 	TaskGuid          string
-	bbsClient         bbs.Client
+	bbsClient         bbs.InternalClient
 	containerDelegate internal.ContainerDelegate
 }
 
 func NewResidualTaskOperation(
 	logger lager.Logger,
 	taskGuid string,
-	bbsClient bbs.Client,
+	bbsClient bbs.InternalClient,
 	containerDelegate internal.ContainerDelegate,
 ) *ResidualTaskOperation {
 	return &ResidualTaskOperation{
@@ -187,7 +190,7 @@ func (o *ResidualTaskOperation) Execute() {
 		return
 	}
 
-	err := o.bbsClient.FailTask(o.TaskGuid, internal.TaskCompletionReasonMissingContainer)
+	err := o.bbsClient.FailTask(logger, o.TaskGuid, internal.TaskCompletionReasonMissingContainer)
 	if err != nil {
 		logger.Error("failed-to-fail-task", err)
 	}

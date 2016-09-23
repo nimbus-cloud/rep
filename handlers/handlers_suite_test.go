@@ -8,12 +8,12 @@ import (
 	"net/http"
 	"net/http/httptest"
 
-	executorfakes "github.com/cloudfoundry-incubator/executor/fakes"
-	"github.com/cloudfoundry-incubator/rep"
-	"github.com/cloudfoundry-incubator/rep/evacuation/evacuation_context/fake_evacuation_context"
-	"github.com/cloudfoundry-incubator/rep/handlers"
-	"github.com/cloudfoundry-incubator/rep/repfakes"
-	"github.com/pivotal-golang/lager/lagertest"
+	executorfakes "code.cloudfoundry.org/executor/fakes"
+	"code.cloudfoundry.org/lager/lagertest"
+	"code.cloudfoundry.org/rep"
+	"code.cloudfoundry.org/rep/evacuation/evacuation_context/fake_evacuation_context"
+	"code.cloudfoundry.org/rep/handlers"
+	"code.cloudfoundry.org/rep/repfakes"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -32,9 +32,10 @@ var requestGenerator *rata.RequestGenerator
 var client *http.Client
 var fakeLocalRep *repfakes.FakeSimClient
 var repGuid string
+var logger *lagertest.TestLogger
 
 var _ = BeforeEach(func() {
-	logger := lagertest.NewTestLogger("handlers")
+	logger = lagertest.NewTestLogger("handlers")
 
 	fakeLocalRep = new(repfakes.FakeSimClient)
 	fakeExecutorClient := new(executorfakes.FakeClient)

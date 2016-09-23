@@ -5,15 +5,15 @@ import (
 	"fmt"
 	"strconv"
 
-	"github.com/cloudfoundry-incubator/bbs/fake_bbs"
-	"github.com/cloudfoundry-incubator/bbs/models"
-	"github.com/cloudfoundry-incubator/bbs/models/test/model_helpers"
-	"github.com/cloudfoundry-incubator/executor"
-	"github.com/cloudfoundry-incubator/rep"
-	"github.com/cloudfoundry-incubator/rep/evacuation/evacuation_context/fake_evacuation_context"
-	"github.com/cloudfoundry-incubator/rep/generator/internal"
-	"github.com/cloudfoundry-incubator/rep/generator/internal/fake_internal"
-	"github.com/pivotal-golang/lager/lagertest"
+	"code.cloudfoundry.org/bbs/fake_bbs"
+	"code.cloudfoundry.org/bbs/models"
+	"code.cloudfoundry.org/bbs/models/test/model_helpers"
+	"code.cloudfoundry.org/executor"
+	"code.cloudfoundry.org/lager/lagertest"
+	"code.cloudfoundry.org/rep"
+	"code.cloudfoundry.org/rep/evacuation/evacuation_context/fake_evacuation_context"
+	"code.cloudfoundry.org/rep/generator/internal"
+	"code.cloudfoundry.org/rep/generator/internal/fake_internal"
 
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -26,13 +26,13 @@ var _ = Describe("OrdinaryLRPProcessor", func() {
 	var (
 		processor          internal.LRPProcessor
 		logger             *lagertest.TestLogger
-		bbsClient          *fake_bbs.FakeClient
+		bbsClient          *fake_bbs.FakeInternalClient
 		containerDelegate  *fake_internal.FakeContainerDelegate
 		evacuationReporter *fake_evacuation_context.FakeEvacuationReporter
 	)
 
 	BeforeEach(func() {
-		bbsClient = new(fake_bbs.FakeClient)
+		bbsClient = new(fake_bbs.FakeInternalClient)
 		containerDelegate = new(fake_internal.FakeContainerDelegate)
 		evacuationReporter = &fake_evacuation_context.FakeEvacuationReporter{}
 		evacuationReporter.EvacuatingReturns(false)
@@ -89,7 +89,7 @@ var _ = Describe("OrdinaryLRPProcessor", func() {
 
 				It("claims the actualLRP in the bbs", func() {
 					Expect(bbsClient.ClaimActualLRPCallCount()).To(Equal(1))
-					processGuid, index, instanceKey := bbsClient.ClaimActualLRPArgsForCall(0)
+					_, processGuid, index, instanceKey := bbsClient.ClaimActualLRPArgsForCall(0)
 					Expect(processGuid).To(Equal(expectedLrpKey.ProcessGuid))
 					Expect(int32(index)).To(Equal(expectedLrpKey.Index))
 					Expect(*instanceKey).To(Equal(expectedInstanceKey))
@@ -148,10 +148,11 @@ var _ = Describe("OrdinaryLRPProcessor", func() {
 
 						It("removes the actual LRP", func() {
 							Expect(bbsClient.RemoveActualLRPCallCount()).To(Equal(1))
-							processGuid, index := bbsClient.RemoveActualLRPArgsForCall(0)
+							_, processGuid, index, instanceKey := bbsClient.RemoveActualLRPArgsForCall(0)
 
 							Expect(processGuid).To(Equal(expectedLrpKey.ProcessGuid))
 							Expect(int32(index)).To(Equal(expectedLrpKey.Index))
+							Expect(*instanceKey).To(Equal(expectedInstanceKey))
 						})
 					})
 				})
@@ -159,7 +160,7 @@ var _ = Describe("OrdinaryLRPProcessor", func() {
 				var itClaimsTheLRPOrDeletesTheContainer = func(expectedSessionName string) {
 					It("claims the lrp", func() {
 						Expect(bbsClient.ClaimActualLRPCallCount()).To(Equal(1))
-						processGuid, index, instanceKey := bbsClient.ClaimActualLRPArgsForCall(0)
+						_, processGuid, index, instanceKey := bbsClient.ClaimActualLRPArgsForCall(0)
 						Expect(processGuid).To(Equal(expectedLrpKey.ProcessGuid))
 						Expect(int32(index)).To(Equal(expectedLrpKey.Index))
 						Expect(*instanceKey).To(Equal(expectedInstanceKey))
@@ -216,7 +217,7 @@ var _ = Describe("OrdinaryLRPProcessor", func() {
 
 					It("starts the lrp", func() {
 						Expect(bbsClient.StartActualLRPCallCount()).To(Equal(1))
-						lrpKey, instanceKey, netInfo := bbsClient.StartActualLRPArgsForCall(0)
+						_, lrpKey, instanceKey, netInfo := bbsClient.StartActualLRPArgsForCall(0)
 						Expect(*lrpKey).To(Equal(expectedLrpKey))
 						Expect(*instanceKey).To(Equal(expectedInstanceKey))
 						Expect(*netInfo).To(Equal(expectedNetInfo))
@@ -269,10 +270,11 @@ var _ = Describe("OrdinaryLRPProcessor", func() {
 
 						It("removes the actual LRP", func() {
 							Expect(bbsClient.RemoveActualLRPCallCount()).To(Equal(1))
-							processGuid, index := bbsClient.RemoveActualLRPArgsForCall(0)
+							_, processGuid, index, instanceKey := bbsClient.RemoveActualLRPArgsForCall(0)
 
 							Expect(processGuid).To(Equal(expectedLrpKey.ProcessGuid))
 							Expect(int32(index)).To(Equal(expectedLrpKey.Index))
+							Expect(*instanceKey).To(Equal(expectedInstanceKey))
 						})
 
 						Context("when the removal succeeds", func() {
@@ -306,7 +308,7 @@ var _ = Describe("OrdinaryLRPProcessor", func() {
 
 						It("crashes the actual LRP", func() {
 							Expect(bbsClient.CrashActualLRPCallCount()).To(Equal(1))
-							lrpKey, instanceKey, reason := bbsClient.CrashActualLRPArgsForCall(0)
+							_, lrpKey, instanceKey, reason := bbsClient.CrashActualLRPArgsForCall(0)
 							Expect(*lrpKey).To(Equal(expectedLrpKey))
 							Expect(*instanceKey).To(Equal(expectedInstanceKey))
 							Expect(reason).To(Equal("crashed"))

@@ -3,7 +3,9 @@ package main
 import (
 	"flag"
 
-	executorinit "github.com/cloudfoundry-incubator/executor/initializer"
+	"path/filepath"
+
+	executorinit "code.cloudfoundry.org/executor/initializer"
 )
 
 var gardenNetwork = flag.String(
@@ -48,6 +50,12 @@ var containerReapInterval = flag.Duration(
 	"interval at which the executor reaps extra/missing containers",
 )
 
+var containerMetricsReportInterval = flag.Duration(
+	"containerMetricsReportInterval",
+	executorinit.DefaultConfiguration.ContainerMetricsReportInterval,
+	"interval at which the executor reports metrics from containers",
+)
+
 var containerInodeLimit = flag.Uint64(
 	"containerInodeLimit",
 	executorinit.DefaultConfiguration.ContainerInodeLimit,
@@ -76,6 +84,12 @@ var skipCertVerify = flag.Bool(
 	"skipCertVerify",
 	executorinit.DefaultConfiguration.SkipCertVerify,
 	"skip SSL certificate verification",
+)
+
+var pathToCACertsForDownloads = flag.String(
+	"caCertsForDownloads",
+	"",
+	"path to CA certificate bundle to be used when downloading assets",
 )
 
 var healthyMonitoringInterval = flag.Duration(
@@ -144,6 +158,12 @@ var gardenHealthcheckInterval = flag.Duration(
 	"Frequency for healthchecking garden",
 )
 
+var gardenHealthcheckEmissionInterval = flag.Duration(
+	"gardenHealthcheckEmissionInterval",
+	executorinit.DefaultConfiguration.GardenHealthcheckEmissionInterval,
+	"Frequency for emitting UnhealthyCell metric",
+)
+
 var gardenHealthcheckTimeout = flag.Duration(
 	"gardenHealthcheckTimeout",
 	executorinit.DefaultConfiguration.GardenHealthcheckTimeout,
@@ -192,10 +212,10 @@ var trustedSystemCertificatesPath = flag.String(
 	"path to directory containing trusted system ca certs.",
 )
 
-var volmanDriverPath = flag.String(
-	"volmanDriverConfigDir",
-	executorinit.DefaultConfiguration.VolmanDriverPath,
-	"path to directory containing volume manager drivers",
+var volmanDriverPaths = flag.String(
+	"volmanDriverPaths",
+	"",
+	"path to directories that the volume manager uses to discover drivers.  May be an OS-specific path-separated set of paths; e.g. /path/to/a:/path/to/b",
 )
 
 var firewallEnv = flag.String(
@@ -204,7 +224,7 @@ var firewallEnv = flag.String(
 	"nimbus2 firewall env, one of: test|dev|stage|prod",
 )
 
-func executorConfig(gardenHealthcheckRootFS string, gardenHealthcheckArgs, gardenHealthcheckEnv []string) executorinit.Configuration {
+func executorConfig(caCertsForDownloads []byte, gardenHealthcheckRootFS string, gardenHealthcheckArgs, gardenHealthcheckEnv []string) executorinit.Configuration {
 	return executorinit.Configuration{
 		GardenNetwork:                      *gardenNetwork,
 		GardenAddr:                         *gardenAddr,
@@ -213,6 +233,7 @@ func executorConfig(gardenHealthcheckRootFS string, gardenHealthcheckArgs, garde
 		CachePath:                          *cachePath,
 		MaxCacheSizeInBytes:                *maxCacheSizeInBytes,
 		SkipCertVerify:                     *skipCertVerify,
+		CACertsForDownloads:                caCertsForDownloads,
 		ExportNetworkEnvVars:               *exportNetworkEnvVars,
 		ContainerMaxCpuShares:              *containerMaxCpuShares,
 		ContainerInodeLimit:                *containerInodeLimit,
@@ -229,6 +250,7 @@ func executorConfig(gardenHealthcheckRootFS string, gardenHealthcheckArgs, garde
 		DiskMB:                             *diskMBFlag,
 		MaxConcurrentDownloads:             *maxConcurrentDownloads,
 		GardenHealthcheckInterval:          *gardenHealthcheckInterval,
+		GardenHealthcheckEmissionInterval:  *gardenHealthcheckEmissionInterval,
 		GardenHealthcheckTimeout:           *gardenHealthcheckTimeout,
 		GardenHealthcheckCommandRetryPause: *gardenHealthcheckCommandRetryPause,
 		GardenHealthcheckRootFS:            gardenHealthcheckRootFS,
@@ -240,9 +262,10 @@ func executorConfig(gardenHealthcheckRootFS string, gardenHealthcheckArgs, garde
 		PostSetupHook:                      *postSetupHook,
 		PostSetupUser:                      *postSetupUser,
 		TrustedSystemCertificatesPath:      *trustedSystemCertificatesPath,
-		VolmanDriverPath:                   *volmanDriverPath,
+		VolmanDriverPaths:                  filepath.SplitList(*volmanDriverPaths),
+		ContainerMetricsReportInterval:     *containerMetricsReportInterval,
 		Zone:			     	    *zone,  	// used for de-zoning VCAP_SERVICES, originally this value is a name of availability zone (z1, z2)
-								// we have slough|hemel so that instances are equally split between DCs.
+		// we have slough|hemel so that instances are equally split between DCs.
 		FirewallEnv:		     	    *firewallEnv,
 	}
 }

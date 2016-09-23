@@ -9,9 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/cloudfoundry-incubator/bbs"
-	bbstestrunner "github.com/cloudfoundry-incubator/bbs/cmd/bbs/testrunner"
-	"github.com/cloudfoundry-incubator/consuladapter/consulrunner"
+	"code.cloudfoundry.org/bbs"
+	bbstestrunner "code.cloudfoundry.org/bbs/cmd/bbs/testrunner"
+	"code.cloudfoundry.org/bbs/test_helpers"
+	"code.cloudfoundry.org/bbs/test_helpers/sqlrunner"
+	"code.cloudfoundry.org/consuladapter/consulrunner"
 	"github.com/cloudfoundry/storeadapter/storerunner/etcdstorerunner"
 	. "github.com/onsi/ginkgo"
 	"github.com/onsi/ginkgo/config"
@@ -22,20 +24,25 @@ import (
 	"github.com/tedsuo/ifrit/ginkgomon"
 )
 
-var cellID string
-var representativePath string
-var etcdRunner *etcdstorerunner.ETCDClusterRunner
-var etcdPort, natsPort int
-var serverPort int
-var consulRunner *consulrunner.ClusterRunner
+var (
+	cellID             string
+	representativePath string
+	etcdRunner         *etcdstorerunner.ETCDClusterRunner
+	etcdPort, natsPort int
+	serverPort         int
+	consulRunner       *consulrunner.ClusterRunner
 
-var bbsArgs bbstestrunner.Args
-var bbsBinPath string
-var bbsURL *url.URL
-var bbsRunner *ginkgomon.Runner
-var bbsProcess ifrit.Process
-var bbsClient bbs.Client
-var auctioneerServer *ghttp.Server
+	bbsArgs          bbstestrunner.Args
+	bbsBinPath       string
+	bbsURL           *url.URL
+	bbsRunner        *ginkgomon.Runner
+	bbsProcess       ifrit.Process
+	bbsClient        bbs.InternalClient
+	auctioneerServer *ghttp.Server
+
+	sqlProcess ifrit.Process
+	sqlRunner  sqlrunner.SQLRunner
+)
 
 func TestRep(t *testing.T) {
 	RegisterFailHandler(Fail)
@@ -43,10 +50,10 @@ func TestRep(t *testing.T) {
 }
 
 var _ = SynchronizedBeforeSuite(func() []byte {
-	bbsConfig, err := gexec.Build("github.com/cloudfoundry-incubator/bbs/cmd/bbs", "-race")
+	bbsConfig, err := gexec.Build("code.cloudfoundry.org/bbs/cmd/bbs", "-race")
 	Expect(err).NotTo(HaveOccurred())
 
-	representative, err := gexec.Build("github.com/cloudfoundry-incubator/rep/cmd/rep", "-race")
+	representative, err := gexec.Build("code.cloudfoundry.org/rep/cmd/rep", "-race")
 	Expect(err).NotTo(HaveOccurred())
 
 	return []byte(strings.Join([]string{representative, bbsConfig}, ","))
@@ -67,6 +74,12 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 
 	etcdRunner = etcdstorerunner.NewETCDClusterRunner(etcdPort, 1, nil)
 
+	if test_helpers.UseSQL() {
+		dbName := fmt.Sprintf("diego_%d", GinkgoParallelNode())
+		sqlRunner = test_helpers.NewSQLRunner(dbName)
+		sqlProcess = ginkgomon.Invoke(sqlRunner)
+	}
+
 	consulRunner = consulrunner.NewClusterRunner(
 		9001+config.GinkgoConfig.ParallelNode*consulrunner.PortOffsetLength,
 		1,
@@ -76,7 +89,10 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	etcdRunner.Start()
 	consulRunner.Start()
 
-	bbsAddress := fmt.Sprintf("127.0.0.1:%d", 13000+GinkgoParallelNode())
+	bbsPort := 13000 + GinkgoParallelNode()*2
+	healthPort := bbsPort + 1
+	bbsAddress := fmt.Sprintf("127.0.0.1:%d", bbsPort)
+	healthAddress := fmt.Sprintf("127.0.0.1:%d", healthPort)
 
 	bbsURL = &url.URL{
 		Scheme: "http",
@@ -96,9 +112,15 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 		AuctioneerAddress: auctioneerServer.URL(),
 		EtcdCluster:       etcdUrl,
 		ConsulCluster:     consulRunner.ConsulCluster(),
+		HealthAddress:     healthAddress,
 
 		EncryptionKeys: []string{"label:key"},
 		ActiveKeyLabel: "label",
+	}
+
+	if test_helpers.UseSQL() {
+		bbsArgs.DatabaseDriver = sqlRunner.DriverName()
+		bbsArgs.DatabaseConnectionString = sqlRunner.ConnectionString()
 	}
 })
 
@@ -113,12 +135,17 @@ var _ = BeforeEach(func() {
 })
 
 var _ = AfterEach(func() {
+	if test_helpers.UseSQL() {
+		sqlRunner.Reset()
+	}
+
 	if bbsProcess != nil {
 		ginkgomon.Kill(bbsProcess)
 	}
 })
 
 var _ = SynchronizedAfterSuite(func() {
+	ginkgomon.Kill(sqlProcess)
 	if etcdRunner != nil {
 		etcdRunner.KillWithFire()
 	}
