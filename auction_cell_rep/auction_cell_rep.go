@@ -16,14 +16,16 @@ var ErrPreloadedRootFSNotFound = errors.New("preloaded rootfs path not found")
 var ErrCellUnhealthy = errors.New("internal cell healthcheck failed")
 
 type AuctionCellRep struct {
-	cellID               string
-	stackPathMap         rep.StackPathMap
-	rootFSProviders      rep.RootFSProviders
-	stack                string
-	zone                 string
-	generateInstanceGuid func() (string, error)
-	client               executor.Client
-	evacuationReporter   evacuation_context.EvacuationReporter
+	cellID                string
+	stackPathMap          rep.StackPathMap
+	rootFSProviders       rep.RootFSProviders
+	stack                 string
+	zone                  string
+	generateInstanceGuid  func() (string, error)
+	client                executor.Client
+	evacuationReporter    evacuation_context.EvacuationReporter
+	placementTags         []string
+	optionalPlacementTags []string
 }
 
 func New(
@@ -34,15 +36,19 @@ func New(
 	generateInstanceGuid func() (string, error),
 	client executor.Client,
 	evacuationReporter evacuation_context.EvacuationReporter,
+	placementTags []string,
+	optionalPlacementTags []string,
 ) *AuctionCellRep {
 	return &AuctionCellRep{
-		cellID:               cellID,
-		stackPathMap:         preloadedStackPathMap,
-		rootFSProviders:      rootFSProviders(preloadedStackPathMap, arbitraryRootFSes),
-		zone:                 zone,
-		generateInstanceGuid: generateInstanceGuid,
-		client:               client,
-		evacuationReporter:   evacuationReporter,
+		cellID:                cellID,
+		stackPathMap:          preloadedStackPathMap,
+		rootFSProviders:       rootFSProviders(preloadedStackPathMap, arbitraryRootFSes),
+		zone:                  zone,
+		generateInstanceGuid:  generateInstanceGuid,
+		client:                client,
+		evacuationReporter:    evacuationReporter,
+		placementTags:         placementTags,
+		optionalPlacementTags: optionalPlacementTags,
 	}
 }
 
@@ -127,7 +133,6 @@ func (a *AuctionCellRep) State(logger lager.Logger) (rep.CellState, error) {
 
 	for i := range containers {
 		container := &containers[i]
-		resource := rep.Resource{MemoryMB: int32(container.MemoryMB), DiskMB: int32(container.DiskMB)}
 
 		if containerIsStarting(container) {
 			startingContainerCount++
@@ -138,6 +143,9 @@ func (a *AuctionCellRep) State(logger lager.Logger) (rep.CellState, error) {
 			continue
 		}
 
+		resource := rep.Resource{MemoryMB: int32(container.MemoryMB), DiskMB: int32(container.DiskMB)}
+		placementConstraint := rep.PlacementConstraint{}
+
 		switch container.Tags[rep.LifecycleTag] {
 		case rep.LRPLifecycle:
 			key, keyErr = rep.ActualLRPKeyFromTags(container.Tags)
@@ -145,10 +153,10 @@ func (a *AuctionCellRep) State(logger lager.Logger) (rep.CellState, error) {
 				logger.Error("failed-to-extract-key", keyErr)
 				continue
 			}
-			lrps = append(lrps, rep.NewLRP(*key, resource))
+			lrps = append(lrps, rep.NewLRP(*key, resource, placementConstraint))
 		case rep.TaskLifecycle:
 			domain := container.Tags[rep.DomainTag]
-			tasks = append(tasks, rep.NewTask(container.Guid, domain, resource))
+			tasks = append(tasks, rep.NewTask(container.Guid, domain, resource, placementConstraint))
 		}
 	}
 
@@ -162,6 +170,8 @@ func (a *AuctionCellRep) State(logger lager.Logger) (rep.CellState, error) {
 		startingContainerCount,
 		a.evacuationReporter.Evacuating(),
 		volumeDrivers,
+		a.placementTags,
+		a.optionalPlacementTags,
 	)
 
 	logger.Info("provided", lager.Data{
@@ -277,7 +287,7 @@ func (a *AuctionCellRep) lrpsToAllocationRequest(lrps []rep.LRP) ([]executor.All
 		containerGuid := rep.LRPContainerGuid(lrp.ProcessGuid, instanceGuid)
 		lrpMap[containerGuid] = lrp
 
-		resource := executor.NewResource(int(lrp.MemoryMB), int(lrp.DiskMB), rootFSPath)
+		resource := executor.NewResource(int(lrp.MemoryMB), int(lrp.DiskMB), int(lrp.MaxPids), rootFSPath)
 		requests = append(requests, executor.NewAllocationRequest(containerGuid, &resource, tags))
 	}
 
@@ -301,7 +311,7 @@ func (a *AuctionCellRep) tasksToAllocationRequests(tasks []rep.Task) ([]executor
 		tags[rep.LifecycleTag] = rep.TaskLifecycle
 		tags[rep.DomainTag] = task.Domain
 
-		resource := executor.NewResource(int(task.MemoryMB), int(task.DiskMB), rootFSPath)
+		resource := executor.NewResource(int(task.MemoryMB), int(task.DiskMB), int(task.MaxPids), rootFSPath)
 		requests = append(requests, executor.NewAllocationRequest(task.TaskGuid, &resource, tags))
 	}
 

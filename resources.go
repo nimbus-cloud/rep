@@ -5,12 +5,13 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"sort"
+	"strings"
 
 	"code.cloudfoundry.org/bbs/models"
 )
 
 var ErrorIncompatibleRootfs = errors.New("rootfs not found")
-var ErrorInsufficientResources = errors.New("insufficient resources")
 
 type CellState struct {
 	RootFSProviders        RootFSProviders
@@ -22,6 +23,8 @@ type CellState struct {
 	Zone                   string
 	Evacuating             bool
 	VolumeDrivers          []string
+	PlacementTags          []string
+	OptionalPlacementTags  []string
 }
 
 func NewCellState(
@@ -34,6 +37,8 @@ func NewCellState(
 	startingContainerCount int,
 	isEvac bool,
 	volumeDrivers []string,
+	placementTags []string,
+	optionalPlacementTags []string,
 ) CellState {
 	return CellState{
 		RootFSProviders:    root,
@@ -45,6 +50,8 @@ func NewCellState(
 		StartingContainerCount: startingContainerCount,
 		Evacuating:             isEvac,
 		VolumeDrivers:          volumeDrivers,
+		PlacementTags:          placementTags,
+		OptionalPlacementTags:  optionalPlacementTags,
 	}
 }
 
@@ -61,18 +68,39 @@ func (c *CellState) AddTask(task *Task) {
 }
 
 func (c *CellState) ResourceMatch(res *Resource) error {
-	switch {
-	case !c.MatchRootFS(res.RootFs):
-		return ErrorIncompatibleRootfs
-	case c.AvailableResources.MemoryMB < res.MemoryMB:
-		return ErrorInsufficientResources
-	case c.AvailableResources.DiskMB < res.DiskMB:
-		return ErrorInsufficientResources
-	case c.AvailableResources.Containers < 1:
-		return ErrorInsufficientResources
-	default:
+	problems := map[string]struct{}{}
+
+	if c.AvailableResources.DiskMB < res.DiskMB {
+		problems["disk"] = struct{}{}
+	}
+	if c.AvailableResources.MemoryMB < res.MemoryMB {
+		problems["memory"] = struct{}{}
+	}
+	if c.AvailableResources.Containers < 1 {
+		problems["containers"] = struct{}{}
+	}
+	if len(problems) == 0 {
 		return nil
 	}
+
+	return InsufficientResourcesError{Problems: problems}
+}
+
+type InsufficientResourcesError struct {
+	Problems map[string]struct{}
+}
+
+func (i InsufficientResourcesError) Error() string {
+	if len(i.Problems) == 0 {
+		return "insufficient resources"
+	}
+
+	keys := []string{}
+	for key, _ := range i.Problems {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	return fmt.Sprintf("insufficient resources: %s", strings.Join(keys, ", "))
 }
 
 func (c CellState) ComputeScore(res *Resource, startingContainerWeight float64) float64 {
@@ -110,6 +138,49 @@ func (c *CellState) MatchVolumeDrivers(volumeDrivers []string) bool {
 	return true
 }
 
+func (c *CellState) MatchPlacementTags(placementTags []string) bool {
+	nRequiredTags := len(c.PlacementTags)
+	nOptionalTags := len(c.OptionalPlacementTags)
+	nDesiredTags := len(placementTags)
+	cellRequiredIndex := 0
+	cellOptionalIndex := 0
+	desiredIndex := 0
+
+	if nDesiredTags > (nRequiredTags + nOptionalTags) {
+		return false
+	}
+
+	sort.Strings(placementTags)
+	sort.Strings(c.PlacementTags)
+	sort.Strings(c.OptionalPlacementTags)
+
+	for {
+		if desiredIndex == nDesiredTags {
+			break
+		}
+		if cellOptionalIndex == nOptionalTags && cellRequiredIndex == nRequiredTags {
+			break
+		}
+		if cellRequiredIndex < nRequiredTags &&
+			placementTags[desiredIndex] == c.PlacementTags[cellRequiredIndex] {
+			cellRequiredIndex++
+			desiredIndex++
+		} else if cellOptionalIndex < nOptionalTags &&
+			placementTags[desiredIndex] == c.OptionalPlacementTags[cellOptionalIndex] {
+			cellOptionalIndex++
+			desiredIndex++
+		} else {
+			if cellOptionalIndex < nOptionalTags {
+				cellOptionalIndex++
+			} else {
+				break
+			}
+		}
+	}
+
+	return desiredIndex == nDesiredTags && cellRequiredIndex == nRequiredTags
+}
+
 type Resources struct {
 	MemoryMB   int32
 	DiskMB     int32
@@ -138,31 +209,45 @@ func (r *Resources) ComputeScore(total *Resources) float64 {
 }
 
 type Resource struct {
-	MemoryMB      int32
-	DiskMB        int32
-	RootFs        string
-	VolumeDrivers []string
+	MemoryMB int32
+	DiskMB   int32
+	MaxPids  int32
 }
 
-func NewResource(memoryMb, diskMb int32, rootfs string, volumeDrivers []string) Resource {
-	return Resource{MemoryMB: memoryMb, DiskMB: diskMb, RootFs: rootfs, VolumeDrivers: volumeDrivers}
+func NewResource(memoryMb, diskMb int32, maxPids int32) Resource {
+	return Resource{MemoryMB: memoryMb, DiskMB: diskMb, MaxPids: maxPids}
 }
 
-func (r *Resource) Empty() bool {
-	return r.DiskMB == 0 && r.MemoryMB == 0 && r.RootFs == ""
+func (r *Resource) Valid() bool {
+	return r.DiskMB >= 0 && r.MemoryMB >= 0
 }
 
 func (r *Resource) Copy() Resource {
-	return NewResource(r.MemoryMB, r.DiskMB, r.RootFs, r.VolumeDrivers)
+	return NewResource(r.MemoryMB, r.DiskMB, r.MaxPids)
+}
+
+type PlacementConstraint struct {
+	PlacementTags []string
+	VolumeDrivers []string
+	RootFs        string
+}
+
+func NewPlacementConstraint(rootFs string, placementTags, volumeDrivers []string) PlacementConstraint {
+	return PlacementConstraint{PlacementTags: placementTags, VolumeDrivers: volumeDrivers, RootFs: rootFs}
+}
+
+func (p *PlacementConstraint) Valid() bool {
+	return p.RootFs != ""
 }
 
 type LRP struct {
 	models.ActualLRPKey
+	PlacementConstraint
 	Resource
 }
 
-func NewLRP(key models.ActualLRPKey, res Resource) LRP {
-	return LRP{key, res}
+func NewLRP(key models.ActualLRPKey, res Resource, pc PlacementConstraint) LRP {
+	return LRP{key, pc, res}
 }
 
 func (lrp *LRP) Identifier() string {
@@ -170,17 +255,18 @@ func (lrp *LRP) Identifier() string {
 }
 
 func (lrp *LRP) Copy() LRP {
-	return NewLRP(lrp.ActualLRPKey, lrp.Resource)
+	return NewLRP(lrp.ActualLRPKey, lrp.Resource, lrp.PlacementConstraint)
 }
 
 type Task struct {
 	TaskGuid string
 	Domain   string
+	PlacementConstraint
 	Resource
 }
 
-func NewTask(guid string, domain string, res Resource) Task {
-	return Task{guid, domain, res}
+func NewTask(guid string, domain string, res Resource, pc PlacementConstraint) Task {
+	return Task{guid, domain, pc, res}
 }
 
 func (task *Task) Identifier() string {

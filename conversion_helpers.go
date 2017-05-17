@@ -136,6 +136,9 @@ func NewRunRequestFromDesiredLRP(
 		TrustedSystemCertificatesPath: desiredLRP.TrustedSystemCertificatesPath,
 		VolumeMounts:                  mounts,
 		Network:                       convertNetwork(desiredLRP.Network),
+		CertificateProperties:         convertCertificateProperties(desiredLRP.CertificateProperties),
+		ImageUsername:                 desiredLRP.ImageUsername,
+		ImagePassword:                 desiredLRP.ImagePassword,
 	}
 	tags := executor.Tags{}
 	return executor.NewRunRequest(containerGuid, &runInfo, tags), nil
@@ -173,6 +176,9 @@ func NewRunRequestFromTask(task *models.Task) (executor.RunRequest, error) {
 		TrustedSystemCertificatesPath: task.TrustedSystemCertificatesPath,
 		VolumeMounts:                  mounts,
 		Network:                       convertNetwork(task.Network),
+		CertificateProperties:         convertCertificateProperties(task.CertificateProperties),
+		ImageUsername:                 task.ImageUsername,
+		ImagePassword:                 task.ImagePassword,
 	}
 	return executor.NewRunRequest(task.TaskGuid, &runInfo, tags), nil
 }
@@ -245,6 +251,16 @@ func convertNetwork(network *models.Network) *executor.Network {
 
 	return &executor.Network{
 		Properties: network.Properties,
+	}
+}
+
+func convertCertificateProperties(props *models.CertificateProperties) executor.CertificateProperties {
+	if props == nil {
+		return executor.CertificateProperties{}
+	}
+
+	return executor.CertificateProperties{
+		OrganizationalUnit: props.OrganizationalUnit,
 	}
 }
 

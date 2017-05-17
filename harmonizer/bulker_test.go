@@ -13,8 +13,7 @@ import (
 	"code.cloudfoundry.org/rep/evacuation/evacuation_context"
 	"code.cloudfoundry.org/rep/generator/fake_generator"
 	"code.cloudfoundry.org/rep/harmonizer"
-	"github.com/cloudfoundry/dropsonde/metric_sender/fake"
-	"github.com/cloudfoundry/dropsonde/metrics"
+	mfakes "code.cloudfoundry.org/go-loggregator/loggregator_v2/fakes"
 	. "github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
 	"github.com/onsi/gomega/gbytes"
@@ -23,8 +22,6 @@ import (
 
 var _ = Describe("Bulker", func() {
 	var (
-		sender *fake.FakeMetricSender
-
 		logger                 *lagertest.TestLogger
 		pollInterval           time.Duration
 		evacuationPollInterval time.Duration
@@ -33,25 +30,33 @@ var _ = Describe("Bulker", func() {
 		fakeQueue              *fake_operationq.FakeQueue
 		evacuatable            evacuation_context.Evacuatable
 		evacuationNotifier     evacuation_context.EvacuationNotifier
+		fakeMetronClient       *mfakes.FakeClient
 
 		bulker  *harmonizer.Bulker
 		process ifrit.Process
 	)
 
 	BeforeEach(func() {
-		sender = fake.NewFakeMetricSender()
-		metrics.Initialize(sender, nil)
-
 		logger = lagertest.NewTestLogger("test")
 		pollInterval = 30 * time.Second
 		evacuationPollInterval = 10 * time.Second
-		fakeClock = fakeclock.NewFakeClock(time.Unix(123, 456))
+		fakeClock = fakeclock.NewFakeClock(time.Now())
 		fakeGenerator = new(fake_generator.FakeGenerator)
 		fakeQueue = new(fake_operationq.FakeQueue)
+		fakeMetronClient = new(mfakes.FakeClient)
 
 		evacuatable, _, evacuationNotifier = evacuation_context.New()
 
-		bulker = harmonizer.NewBulker(logger, pollInterval, evacuationPollInterval, evacuationNotifier, fakeClock, fakeGenerator, fakeQueue)
+		bulker = harmonizer.NewBulker(
+			logger,
+			pollInterval,
+			evacuationPollInterval,
+			evacuationNotifier,
+			fakeClock,
+			fakeGenerator,
+			fakeQueue,
+			fakeMetronClient,
+		)
 	})
 
 	JustBeforeEach(func() {
@@ -64,7 +69,7 @@ var _ = Describe("Bulker", func() {
 		Eventually(process.Wait()).Should(Receive())
 	})
 
-	itPerformsBatchOperations := func() {
+	itPerformsBatchOperations := func(expectedQueueLength int) {
 		Context("when generating the batch operations succeeds", func() {
 			var (
 				operation1 *fake_operationq.FakeOperation
@@ -82,21 +87,21 @@ var _ = Describe("Bulker", func() {
 			})
 
 			It("pushes them onto the queue", func() {
-				Eventually(fakeQueue.PushCallCount).Should(Equal(2))
+				Eventually(fakeQueue.PushCallCount).Should(Equal(expectedQueueLength))
 
 				enqueuedOperations := make([]operationq.Operation, 0, 2)
-				enqueuedOperations = append(enqueuedOperations, fakeQueue.PushArgsForCall(0))
-				enqueuedOperations = append(enqueuedOperations, fakeQueue.PushArgsForCall(1))
+				enqueuedOperations = append(enqueuedOperations, fakeQueue.PushArgsForCall(expectedQueueLength-2))
+				enqueuedOperations = append(enqueuedOperations, fakeQueue.PushArgsForCall(expectedQueueLength-1))
 
 				Expect(enqueuedOperations).To(ConsistOf(operation1, operation2))
 			})
 
 			It("emits the duration it took to generate the batch operations", func() {
-				Eventually(fakeQueue.PushCallCount).Should(Equal(2))
+				Eventually(fakeQueue.PushCallCount).Should(Equal(expectedQueueLength))
 
-				reportedDuration := sender.GetValue("RepBulkSyncDuration")
-				Expect(reportedDuration.Unit).To(Equal("nanos"))
-				Expect(reportedDuration.Value).To(BeNumerically("==", 10*time.Second))
+				name, value := fakeMetronClient.SendDurationArgsForCall(0)
+				Expect(name).To(Equal("RepBulkSyncDuration"))
+				Expect(value).To(BeNumerically("==", 10*time.Second))
 			})
 		})
 
@@ -116,17 +121,17 @@ var _ = Describe("Bulker", func() {
 
 	Context("when the poll interval elapses", func() {
 		JustBeforeEach(func() {
-			fakeClock.WaitForWatcherAndIncrement(pollInterval + 1)
+			fakeClock.WaitForWatcherAndIncrement(pollInterval)
 		})
 
-		itPerformsBatchOperations()
+		itPerformsBatchOperations(2)
 
 		Context("and elapses again", func() {
-			BeforeEach(func() {
-				fakeClock.Increment(pollInterval)
+			JustBeforeEach(func() {
+				fakeClock.WaitForWatcherAndIncrement(pollInterval)
 			})
 
-			itPerformsBatchOperations()
+			itPerformsBatchOperations(4)
 		})
 	})
 
@@ -145,7 +150,7 @@ var _ = Describe("Bulker", func() {
 			evacuatable.Evacuate()
 		})
 
-		itPerformsBatchOperations()
+		itPerformsBatchOperations(2)
 
 		It("batches operations only once", func() {
 			Eventually(fakeGenerator.BatchOperationsCallCount).Should(Equal(1))

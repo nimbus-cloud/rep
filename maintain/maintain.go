@@ -5,7 +5,6 @@ import (
 	"os"
 	"time"
 
-	"code.cloudfoundry.org/bbs"
 	"code.cloudfoundry.org/bbs/models"
 	"code.cloudfoundry.org/clock"
 	"code.cloudfoundry.org/executor"
@@ -16,26 +15,29 @@ import (
 type Maintainer struct {
 	Config
 	executorClient executor.Client
-	serviceClient  bbs.ServiceClient
+	serviceClient  CellPresenceClient
 	logger         lager.Logger
 	lockTTL        time.Duration
 	clock          clock.Clock
 }
 
 type Config struct {
-	CellID            string
-	RepAddress        string
-	Zone              string
-	RetryInterval     time.Duration
-	RootFSProviders   []string
-	PreloadedRootFSes []string
+	CellID                string
+	RepAddress            string
+	RepUrl                string
+	Zone                  string
+	RetryInterval         time.Duration
+	RootFSProviders       []string
+	PreloadedRootFSes     []string
+	PlacementTags         []string
+	OptionalPlacementTags []string
 }
 
 func New(
 	logger lager.Logger,
 	config Config,
 	executorClient executor.Client,
-	serviceClient bbs.ServiceClient,
+	serviceClient CellPresenceClient,
 	lockTTL time.Duration,
 	clock clock.Clock,
 ) *Maintainer {
@@ -78,6 +80,8 @@ func (m *Maintainer) waitForExecutor(sigChan <-chan os.Signal) (ifrit.Runner, er
 	defer m.logger.Info("complete-waiting-for-executor")
 
 	sleeper := m.clock.NewTimer(ExecutorPollInterval)
+	defer sleeper.Stop()
+
 	for {
 		m.logger.Debug("waiting-pinging-executor")
 		err := m.executorClient.Ping(m.logger)
@@ -102,9 +106,8 @@ func (m *Maintainer) createHeartbeater() (ifrit.Runner, error) {
 	if err != nil {
 		return nil, err
 	}
-
 	cellCapacity := models.NewCellCapacity(int32(resources.MemoryMB), int32(resources.DiskMB), int32(resources.Containers))
-	cellPresence := models.NewCellPresence(m.CellID, m.RepAddress, m.Zone, cellCapacity, m.RootFSProviders, m.PreloadedRootFSes)
+	cellPresence := models.NewCellPresence(m.CellID, m.RepAddress, m.RepUrl, m.Zone, cellCapacity, m.RootFSProviders, m.PreloadedRootFSes, m.PlacementTags, m.OptionalPlacementTags)
 	return m.serviceClient.NewCellPresenceRunner(m.logger, &cellPresence, m.RetryInterval, m.lockTTL), nil
 }
 

@@ -317,13 +317,17 @@ var _ = Describe("Resources", func() {
 						Mode:          executor.BindMountModeRO,
 					},
 				},
-
 				Network: &executor.Network{
 					Properties: map[string]string{
 						"some-key":       "some-value",
 						"some-other-key": "some-other-value",
 					},
 				},
+				CertificateProperties: executor.CertificateProperties{
+					OrganizationalUnit: []string{"iamthelizardking", "iamthelizardqueen"},
+				},
+				ImageUsername: "image-username",
+				ImagePassword: "image-password",
 			}))
 		})
 
@@ -336,6 +340,18 @@ var _ = Describe("Resources", func() {
 				runReq, err := rep.NewRunRequestFromDesiredLRP(containerGuid, desiredLRP, &actualLRP.ActualLRPKey, &actualLRP.ActualLRPInstanceKey)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(runReq.Network).To(BeNil())
+			})
+		})
+
+		Context("when the certificate properties are nil", func() {
+			BeforeEach(func() {
+				desiredLRP.CertificateProperties = nil
+			})
+
+			It("it sets an empty certificate properties on the result", func() {
+				runReq, err := rep.NewRunRequestFromDesiredLRP(containerGuid, desiredLRP, &actualLRP.ActualLRPKey, &actualLRP.ActualLRPInstanceKey)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(runReq.CertificateProperties).To(Equal(executor.CertificateProperties{}))
 			})
 		})
 
@@ -409,6 +425,11 @@ var _ = Describe("Resources", func() {
 						"some-other-key": "some-other-value",
 					},
 				},
+				CertificateProperties: executor.CertificateProperties{
+					OrganizationalUnit: []string{"iamthelizardking", "iamthelizardqueen"},
+				},
+				ImageUsername: "image-username",
+				ImagePassword: "image-password",
 			}))
 		})
 
@@ -421,6 +442,18 @@ var _ = Describe("Resources", func() {
 				runReq, err := rep.NewRunRequestFromTask(task)
 				Expect(err).NotTo(HaveOccurred())
 				Expect(runReq.Network).To(BeNil())
+			})
+		})
+
+		Context("when the certificate properties are nil", func() {
+			BeforeEach(func() {
+				task.CertificateProperties = nil
+			})
+
+			It("it sets an empty certificate properties on the result", func() {
+				runReq, err := rep.NewRunRequestFromTask(task)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(runReq.CertificateProperties).To(Equal(executor.CertificateProperties{}))
 			})
 		})
 

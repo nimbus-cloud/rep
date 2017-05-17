@@ -2,6 +2,8 @@ package main_test
 
 import (
 	"fmt"
+	"io/ioutil"
+	"log"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -9,12 +11,15 @@ import (
 	"testing"
 	"time"
 
+	"google.golang.org/grpc/grpclog"
+
 	"code.cloudfoundry.org/bbs"
+	bbsconfig "code.cloudfoundry.org/bbs/cmd/bbs/config"
 	bbstestrunner "code.cloudfoundry.org/bbs/cmd/bbs/testrunner"
+	"code.cloudfoundry.org/bbs/encryption"
 	"code.cloudfoundry.org/bbs/test_helpers"
 	"code.cloudfoundry.org/bbs/test_helpers/sqlrunner"
 	"code.cloudfoundry.org/consuladapter/consulrunner"
-	"github.com/cloudfoundry/storeadapter/storerunner/etcdstorerunner"
 	. "github.com/onsi/ginkgo"
 	"github.com/onsi/ginkgo/config"
 	. "github.com/onsi/gomega"
@@ -25,20 +30,21 @@ import (
 )
 
 var (
-	cellID             string
-	representativePath string
-	etcdRunner         *etcdstorerunner.ETCDClusterRunner
-	etcdPort, natsPort int
-	serverPort         int
-	consulRunner       *consulrunner.ClusterRunner
+	cellID              string
+	representativePath  string
+	natsPort            int
+	serverPort          int
+	serverPortSecurable int
+	consulRunner        *consulrunner.ClusterRunner
 
-	bbsArgs          bbstestrunner.Args
+	bbsConfig        bbsconfig.BBSConfig
 	bbsBinPath       string
 	bbsURL           *url.URL
 	bbsRunner        *ginkgomon.Runner
 	bbsProcess       ifrit.Process
 	bbsClient        bbs.InternalClient
 	auctioneerServer *ghttp.Server
+	locketBinPath    string
 
 	sqlProcess ifrit.Process
 	sqlRunner  sqlrunner.SQLRunner
@@ -53,11 +59,16 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	bbsConfig, err := gexec.Build("code.cloudfoundry.org/bbs/cmd/bbs", "-race")
 	Expect(err).NotTo(HaveOccurred())
 
+	locketPath, err := gexec.Build("code.cloudfoundry.org/locket/cmd/locket", "-race")
+	Expect(err).NotTo(HaveOccurred())
+
 	representative, err := gexec.Build("code.cloudfoundry.org/rep/cmd/rep", "-race")
 	Expect(err).NotTo(HaveOccurred())
 
-	return []byte(strings.Join([]string{representative, bbsConfig}, ","))
+	return []byte(strings.Join([]string{representative, locketPath, bbsConfig}, ","))
 }, func(pathsByte []byte) {
+	grpclog.SetLogger(log.New(ioutil.Discard, "", 0))
+
 	// tests here are fairly Eventually driven which tends to flake out under
 	// load (for insignificant reasons); bump the default a bit higher than the
 	// default (1 second)
@@ -65,28 +76,27 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 
 	path := string(pathsByte)
 	representativePath = strings.Split(path, ",")[0]
-	bbsBinPath = strings.Split(path, ",")[1]
+	locketBinPath = strings.Split(path, ",")[1]
+	bbsBinPath = strings.Split(path, ",")[2]
 
-	cellID = "the-rep-id-" + strconv.Itoa(GinkgoParallelNode())
+	cellID = "the_rep_id-" + strconv.Itoa(GinkgoParallelNode())
 
-	etcdPort = 4001 + GinkgoParallelNode()
 	serverPort = 1800 + GinkgoParallelNode()
+	serverPortSecurable = 1901 + GinkgoParallelNode()
 
-	etcdRunner = etcdstorerunner.NewETCDClusterRunner(etcdPort, 1, nil)
+	dbName := fmt.Sprintf("diego_%d", GinkgoParallelNode())
 
-	if test_helpers.UseSQL() {
-		dbName := fmt.Sprintf("diego_%d", GinkgoParallelNode())
-		sqlRunner = test_helpers.NewSQLRunner(dbName)
-		sqlProcess = ginkgomon.Invoke(sqlRunner)
-	}
+	sqlRunner = test_helpers.NewSQLRunner(dbName)
+	sqlProcess = ginkgomon.Invoke(sqlRunner)
 
 	consulRunner = consulrunner.NewClusterRunner(
-		9001+config.GinkgoConfig.ParallelNode*consulrunner.PortOffsetLength,
-		1,
-		"http",
+		consulrunner.ClusterRunnerConfig{
+			StartingPort: 9001 + config.GinkgoConfig.ParallelNode*consulrunner.PortOffsetLength,
+			NumNodes:     1,
+			Scheme:       "http",
+		},
 	)
 
-	etcdRunner.Start()
 	consulRunner.Start()
 
 	bbsPort := 13000 + GinkgoParallelNode()*2
@@ -105,22 +115,19 @@ var _ = SynchronizedBeforeSuite(func() []byte {
 	auctioneerServer.UnhandledRequestStatusCode = http.StatusAccepted
 	auctioneerServer.AllowUnhandledRequests = true
 
-	etcdUrl := fmt.Sprintf("http://127.0.0.1:%d", etcdPort)
-	bbsArgs = bbstestrunner.Args{
-		Address:           bbsAddress,
-		AdvertiseURL:      bbsURL.String(),
-		AuctioneerAddress: auctioneerServer.URL(),
-		EtcdCluster:       etcdUrl,
-		ConsulCluster:     consulRunner.ConsulCluster(),
-		HealthAddress:     healthAddress,
+	bbsConfig = bbsconfig.BBSConfig{
+		ListenAddress:            bbsAddress,
+		AdvertiseURL:             bbsURL.String(),
+		AuctioneerAddress:        auctioneerServer.URL(),
+		DatabaseDriver:           sqlRunner.DriverName(),
+		DatabaseConnectionString: sqlRunner.ConnectionString(),
+		ConsulCluster:            consulRunner.ConsulCluster(),
+		HealthAddress:            healthAddress,
 
-		EncryptionKeys: []string{"label:key"},
-		ActiveKeyLabel: "label",
-	}
-
-	if test_helpers.UseSQL() {
-		bbsArgs.DatabaseDriver = sqlRunner.DriverName()
-		bbsArgs.DatabaseConnectionString = sqlRunner.ConnectionString()
+		EncryptionConfig: encryption.EncryptionConfig{
+			EncryptionKeys: map[string]string{"label": "key"},
+			ActiveKeyLabel: "label",
+		},
 	}
 })
 
@@ -128,27 +135,18 @@ var _ = BeforeEach(func() {
 	consulRunner.WaitUntilReady()
 	consulRunner.Reset()
 
-	etcdRunner.Reset()
-
-	bbsRunner = bbstestrunner.New(bbsBinPath, bbsArgs)
+	bbsRunner = bbstestrunner.New(bbsBinPath, bbsConfig)
 	bbsProcess = ginkgomon.Invoke(bbsRunner)
 })
 
 var _ = AfterEach(func() {
-	if test_helpers.UseSQL() {
-		sqlRunner.Reset()
-	}
+	sqlRunner.Reset()
 
-	if bbsProcess != nil {
-		ginkgomon.Kill(bbsProcess)
-	}
+	ginkgomon.Kill(bbsProcess)
 })
 
 var _ = SynchronizedAfterSuite(func() {
 	ginkgomon.Kill(sqlProcess)
-	if etcdRunner != nil {
-		etcdRunner.KillWithFire()
-	}
 	if consulRunner != nil {
 		consulRunner.Stop()
 	}

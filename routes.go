@@ -15,16 +15,31 @@ const (
 	EvacuateRoute = "Evacuate"
 )
 
-var Routes = rata.Routes{
-	{Path: "/state", Method: "GET", Name: StateRoute},
-	{Path: "/work", Method: "POST", Name: PerformRoute},
+func NewRoutes(secure bool) rata.Routes {
+	var routes rata.Routes
 
-	{Path: "/v1/lrps/:process_guid/instances/:instance_guid/stop", Method: "POST", Name: StopLRPInstanceRoute},
-	{Path: "/v1/tasks/:task_guid/cancel", Method: "POST", Name: CancelTaskRoute},
+	if secure {
+		routes = append(routes,
+			rata.Route{Path: "/state", Method: "GET", Name: StateRoute},
+			rata.Route{Path: "/work", Method: "POST", Name: PerformRoute},
 
-	{Path: "/sim/reset", Method: "POST", Name: Sim_ResetRoute},
+			rata.Route{Path: "/v1/lrps/:process_guid/instances/:instance_guid/stop", Method: "POST", Name: StopLRPInstanceRoute},
+			rata.Route{Path: "/v1/tasks/:task_guid/cancel", Method: "POST", Name: CancelTaskRoute},
 
-	// These routes are called by the rep ctl and drain scripts
-	{Path: "/ping", Method: "GET", Name: PingRoute},
-	{Path: "/evacuate", Method: "POST", Name: EvacuateRoute},
+			rata.Route{Path: "/sim/reset", Method: "POST", Name: Sim_ResetRoute},
+		)
+	}
+
+	if !secure {
+		routes = append(routes,
+			rata.Route{Path: "/ping", Method: "GET", Name: PingRoute},
+			rata.Route{Path: "/evacuate", Method: "POST", Name: EvacuateRoute},
+		)
+	}
+	return routes
+
 }
+
+var RoutesInsecure = NewRoutes(false)
+var RoutesSecure = NewRoutes(true)
+var Routes = append(RoutesInsecure, RoutesSecure...)

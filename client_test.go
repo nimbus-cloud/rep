@@ -2,6 +2,8 @@ package rep_test
 
 import (
 	"net/http"
+	"os"
+	"path"
 	"time"
 
 	"code.cloudfoundry.org/bbs/models"
@@ -13,13 +15,69 @@ import (
 	"github.com/onsi/gomega/ghttp"
 )
 
+var _ = Describe("ClientFactory", func() {
+	var (
+		httpClient                    *http.Client
+		fixturePath                   string
+		certFile, keyFile, caCertFile string
+	)
+
+	BeforeEach(func() {
+		fixturePath = path.Join(os.Getenv("GOPATH"), "src/code.cloudfoundry.org/rep/cmd/rep/fixtures")
+		certFile = path.Join(fixturePath, "blue-certs/client.crt")
+		keyFile = path.Join(fixturePath, "blue-certs/client.key")
+		caCertFile = path.Join(fixturePath, "blue-certs/server-ca.crt")
+	})
+
+	Describe("NewClientFactory", func() {
+		Context("when no TLS configuration is provided", func() {
+			It("returns a new client", func() {
+				httpClient = cfhttp.NewClient()
+				client, err := rep.NewClientFactory(httpClient, httpClient, nil)
+				Expect(err).NotTo(HaveOccurred())
+				Expect(client).NotTo(BeNil())
+			})
+		})
+
+		Context("when TLS is preferred", func() {
+			var tlsConfig *rep.TLSConfig
+			BeforeEach(func() {
+				tlsConfig = &rep.TLSConfig{RequireTLS: false}
+				httpClient = cfhttp.NewClient()
+			})
+
+			Context("no cert files are provided", func() {
+				It("returns a new client", func() {
+					client, err := rep.NewClientFactory(httpClient, httpClient, tlsConfig)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(client).NotTo(BeNil())
+				})
+			})
+
+			Context("valid cert files are provided", func() {
+				It("returns a new client", func() {
+					tlsConfig.CertFile = certFile
+					tlsConfig.KeyFile = keyFile
+					tlsConfig.CaCertFile = caCertFile
+
+					client, err := rep.NewClientFactory(httpClient, httpClient, tlsConfig)
+					Expect(err).NotTo(HaveOccurred())
+					Expect(client).NotTo(BeNil())
+				})
+			})
+		})
+	})
+})
+
 var _ = Describe("Client", func() {
 	var fakeServer *ghttp.Server
 	var client rep.Client
 
 	BeforeEach(func() {
 		fakeServer = ghttp.NewServer()
-		client = rep.NewClient(cfhttp.NewClient(), nil, fakeServer.URL())
+		var err error
+		client, err = factory.CreateClient(fakeServer.URL(), "")
+		Expect(err).NotTo(HaveOccurred())
 	})
 
 	AfterEach(func() {

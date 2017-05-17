@@ -5,14 +5,14 @@ import (
 	"os"
 	"time"
 
-	"code.cloudfoundry.org/bbs/fake_bbs"
+	"code.cloudfoundry.org/bbs/models"
 	"code.cloudfoundry.org/clock/fakeclock"
 	"code.cloudfoundry.org/executor"
 	fake_client "code.cloudfoundry.org/executor/fakes"
 	"code.cloudfoundry.org/lager"
 	"code.cloudfoundry.org/lager/lagertest"
 	"code.cloudfoundry.org/rep/maintain"
-	maintain_fakes "code.cloudfoundry.org/rep/maintain/fakes"
+	"code.cloudfoundry.org/rep/maintain/maintainfakes"
 	"github.com/tedsuo/ifrit"
 	"github.com/tedsuo/ifrit/ginkgomon"
 
@@ -24,9 +24,9 @@ import (
 var _ = Describe("Maintain Presence", func() {
 	var (
 		config          maintain.Config
-		fakeHeartbeater *maintain_fakes.FakeRunner
+		fakeHeartbeater *maintainfakes.FakeRunner
 		fakeClient      *fake_client.FakeClient
-		serviceClient   *fake_bbs.FakeServiceClient
+		serviceClient   *maintainfakes.FakeCellPresenceClient
 		logger          *lagertest.TestLogger
 
 		maintainer        ifrit.Runner
@@ -52,7 +52,7 @@ var _ = Describe("Maintain Presence", func() {
 
 		heartbeaterErrors = make(chan error)
 		observedSignals = make(chan os.Signal, 2)
-		fakeHeartbeater = &maintain_fakes.FakeRunner{
+		fakeHeartbeater = &maintainfakes.FakeRunner{
 			RunStub: func(sigChan <-chan os.Signal, ready chan<- struct{}) error {
 				defer GinkgoRecover()
 				logger.Info("fake-heartbeat-started")
@@ -71,15 +71,18 @@ var _ = Describe("Maintain Presence", func() {
 			},
 		}
 
-		serviceClient = &fake_bbs.FakeServiceClient{}
+		serviceClient = &maintainfakes.FakeCellPresenceClient{}
 		serviceClient.NewCellPresenceRunnerReturns(fakeHeartbeater)
 
 		config = maintain.Config{
-			CellID:          "cell-id",
-			RepAddress:      "1.2.3.4",
-			Zone:            "az1",
-			RetryInterval:   1 * time.Second,
-			RootFSProviders: []string{"provider-1", "provider-2"},
+			CellID:                "cell-id",
+			RepAddress:            "1.2.3.4",
+			RepUrl:                "https://cell-id.service.cf.internal",
+			Zone:                  "az1",
+			RetryInterval:         1 * time.Second,
+			RootFSProviders:       []string{"provider-1", "provider-2"},
+			PlacementTags:         []string{"test-tag-1", "test-tag-2"},
+			OptionalPlacementTags: []string{"optional-test-tag-1", "optional-test-tag-2"},
 		}
 		maintainer = maintain.New(logger, config, fakeClient, serviceClient, 10*time.Second, clock)
 	})
@@ -110,7 +113,7 @@ var _ = Describe("Maintain Presence", func() {
 
 			pingErrors <- nil
 			clock.WaitForWatcherAndIncrement(1 * time.Second)
-			Eventually(fakeClient.PingCallCount).Should(Equal(5))
+			Eventually(fakeClient.PingCallCount).Should(BeNumerically(">=", 5))
 
 			Eventually(ready).Should(BeClosed())
 			Expect(fakeHeartbeater.RunCallCount()).To(Equal(1))
@@ -120,7 +123,7 @@ var _ = Describe("Maintain Presence", func() {
 	Context("when pinging the executor succeeds", func() {
 		Context("when the heartbeater is not ready", func() {
 			BeforeEach(func() {
-				fakeHeartbeater = &maintain_fakes.FakeRunner{
+				fakeHeartbeater = &maintainfakes.FakeRunner{
 					RunStub: func(sigChan <-chan os.Signal, ready chan<- struct{}) error {
 						defer GinkgoRecover()
 						for {
@@ -178,6 +181,24 @@ var _ = Describe("Maintain Presence", func() {
 
 			It("starts maintaining presence", func() {
 				Expect(serviceClient.NewCellPresenceRunnerCallCount()).To(Equal(1))
+
+				expectedPresence := models.NewCellPresence(
+					"cell-id",
+					"1.2.3.4",
+					"https://cell-id.service.cf.internal",
+					"az1",
+					models.NewCellCapacity(128, 1024, 6),
+					[]string{"provider-1", "provider-2"},
+					[]string{},
+					[]string{"test-tag-1", "test-tag-2"},
+					[]string{"optional-test-tag-1", "optional-test-tag-2"},
+				)
+
+				_, presence, retryInterval, lockTTL := serviceClient.NewCellPresenceRunnerArgsForCall(0)
+				Expect(*presence).To(Equal(expectedPresence))
+				Expect(retryInterval).To(Equal(1 * time.Second))
+				Expect(lockTTL).To(Equal(10 * time.Second))
+
 				Eventually(fakeHeartbeater.RunCallCount).Should(Equal(1))
 			})
 
@@ -245,7 +266,7 @@ var _ = Describe("Maintain Presence", func() {
 					for i := 2; i < 6; i++ {
 						pingErrors <- nil
 						Eventually(fakeClient.PingCallCount).Should(Equal(i))
-						clock.Increment(1 * time.Second)
+						clock.WaitForWatcherAndIncrement(1 * time.Second)
 					}
 				})
 

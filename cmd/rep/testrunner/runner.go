@@ -1,9 +1,13 @@
 package testrunner
 
 import (
-	"fmt"
+	"encoding/json"
+	"io/ioutil"
+	"os"
 	"os/exec"
 	"time"
+
+	"code.cloudfoundry.org/rep/cmd/rep/config"
 
 	"github.com/onsi/ginkgo"
 	. "github.com/onsi/gomega"
@@ -12,31 +16,18 @@ import (
 )
 
 type Runner struct {
-	binPath    string
-	Session    *gexec.Session
-	StartCheck string
-	config     Config
+	binPath           string
+	Session           *gexec.Session
+	StartCheck        string
+	repConfig         config.RepConfig
+	repConfigFilePath string
 }
 
-type Config struct {
-	PreloadedRootFSes   []string
-	RootFSProviders     []string
-	CACertsForDownloads string
-	CellID              string
-	BBSAddress          string
-	ServerPort          int
-	GardenAddr          string
-	LogLevel            string
-	ConsulCluster       string
-	PollingInterval     time.Duration
-	EvacuationTimeout   time.Duration
-}
-
-func New(binPath string, config Config) *Runner {
+func New(binPath string, repConfig config.RepConfig) *Runner {
 	return &Runner{
 		binPath:    binPath,
 		StartCheck: "rep.started",
-		config:     config,
+		repConfig:  repConfig,
 	}
 }
 
@@ -45,29 +36,20 @@ func (r *Runner) Start() {
 		panic("starting more than one rep!!!")
 	}
 
+	f, err := ioutil.TempFile("", "rep")
+	Expect(err).NotTo(HaveOccurred())
+
+	defer f.Close()
+
+	encoder := json.NewEncoder(f)
+
+	err = encoder.Encode(r.repConfig)
+	Expect(err).NotTo(HaveOccurred())
+
+	r.repConfigFilePath = f.Name()
+
 	args := []string{
-		"-cellID", r.config.CellID,
-		"-listenAddr", fmt.Sprintf("0.0.0.0:%d", r.config.ServerPort),
-		"-bbsAddress", r.config.BBSAddress,
-		"-logLevel", r.config.LogLevel,
-		"-pollingInterval", r.config.PollingInterval.String(),
-		"-evacuationTimeout", r.config.EvacuationTimeout.String(),
-		"-lockRetryInterval", "1s",
-		"-consulCluster", r.config.ConsulCluster,
-		"-containerMaxCpuShares", "1024",
-		"-gardenNetwork", "tcp",
-		"-gardenAddr", r.config.GardenAddr,
-		"-gardenHealthcheckProcessUser", "me",
-		"-gardenHealthcheckProcessPath", "ls",
-	}
-	for _, rootfs := range r.config.PreloadedRootFSes {
-		args = append(args, "-preloadedRootFS", rootfs)
-	}
-	for _, provider := range r.config.RootFSProviders {
-		args = append(args, "-rootFSProvider", provider)
-	}
-	if r.config.CACertsForDownloads != "" {
-		args = append(args, "-caCertsForDownloads", r.config.CACertsForDownloads)
+		"--config", r.repConfigFilePath,
 	}
 
 	repSession, err := gexec.Start(
@@ -86,12 +68,18 @@ func (r *Runner) Start() {
 }
 
 func (r *Runner) Stop() {
+	err := os.RemoveAll(r.repConfigFilePath)
+	Expect(err).NotTo(HaveOccurred())
+
 	if r.Session != nil {
 		r.Session.Interrupt().Wait(5 * time.Second)
 	}
 }
 
 func (r *Runner) KillWithFire() {
+	err := os.RemoveAll(r.repConfigFilePath)
+	Expect(err).NotTo(HaveOccurred())
+
 	if r.Session != nil {
 		r.Session.Kill().Wait(5 * time.Second)
 	}
